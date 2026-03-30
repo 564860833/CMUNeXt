@@ -36,7 +36,6 @@ from src.network.conv_based.CMUNeXt_PresenceAux import cmunext_presenceaux, Pres
 from src.network.conv_based.CMUNeXt_BoundaryDS import cmunext_boundaryds, BoundaryDeepSupervisionLoss
 from src.network.conv_based.CMUNeXt_DualGAG import cmunext_dualgag
 
-from src.network.conv_based.CMUNeXt_GMSF_ASPP import CMUNeXt_GMSF_ASPP
 
 
 from src.network.transfomer_based.transformer_based_network import get_transformer_based_model
@@ -59,7 +58,7 @@ def seed_torch(seed):
 parser = argparse.ArgumentParser()
 parser.add_argument('--model', type=str, default="Mobile_U_ViT",
                     choices=["Mobile_U_ViT", "CMUNeXt","CMUNeXt_MKDC", "CMUNeXt_GAG", "CMUNeXt_CMFA", "CMUNeXt_PresenceAux",
-                             "CMUNeXt_BoundaryDS", "CMUNeXt_DualGAG", "CMUNeXt_GMSF_ASPP", "CMUNet",
+                             "CMUNeXt_BoundaryDS", "CMUNeXt_DualGAG", "CMUNet",
                               "AttU_Net", "TransUnet", "R2U_Net", "U_Net",
                              "UNext", "UNetplus", "UNet3plus", "SwinUnet", "MedT", "TransUnet"], help='model')
 parser.add_argument('--base_dir', type=str, default="./data/busi", help='dir')
@@ -95,8 +94,6 @@ def get_model(args):
         model = cmunext_boundaryds(num_classes=args.num_classes).cuda()
     elif args.model == "CMUNeXt_DualGAG":
         model = cmunext_dualgag(num_classes=args.num_classes).cuda()
-    elif args.model == "CMUNeXt_GMSF_ASPP":
-        model = CMUNeXt_GMSF_ASPP(num_classes=args.num_classes).cuda()
     elif args.model == "U_Net":
         model = U_Net(output_ch=args.num_classes).cuda()
     elif args.model == "AttU_Net":
