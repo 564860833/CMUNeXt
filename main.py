@@ -132,6 +132,12 @@ def get_seg_logits(outputs):
     return outputs
 
 
+def get_loss_tensor(loss_output):
+    if isinstance(loss_output, tuple):
+        return loss_output[0]
+    return loss_output
+
+
 def getDataloader(args):
     img_size = args.img_size
     if args.model == "SwinUnet":
@@ -248,7 +254,7 @@ def main(args):
             outputs = forward_with_model(args, model, img_batch)
             seg_logits = get_seg_logits(outputs)
 
-            loss = criterion(outputs, label_batch)
+            loss = get_loss_tensor(criterion(outputs, label_batch))
             iou, dice, _, _, _, _, _ = iou_score(seg_logits, label_batch)
             optimizer.zero_grad()
             loss.backward()
@@ -273,7 +279,7 @@ def main(args):
                 img_batch, label_batch = img_batch.cuda(), label_batch.cuda()
                 output = forward_with_model(args, model, img_batch)
                 seg_logits = get_seg_logits(output)
-                loss = criterion(output, label_batch)
+                loss = get_loss_tensor(criterion(output, label_batch))
                 iou, _, SE, PC, F1, SP, ACC = iou_score(seg_logits, label_batch)
                 avg_meters['val_loss'].update(loss.item(), img_batch.size(0))
                 avg_meters['val_iou'].update(iou, img_batch.size(0))
