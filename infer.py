@@ -24,8 +24,6 @@ from src.network.conv_based.CMUNeXt_CMFA import cmunext_cmfa
 from src.network.conv_based.CMUNeXt_PresenceAux import cmunext_presenceaux
 from src.network.conv_based.CMUNeXt_BoundaryDS import cmunext_boundaryds
 from src.network.conv_based.CMUNeXt_DualGAG import cmunext_dualgag
-from src.network.conv_based.CMUNeXt_ASPP import CMUNeXt_ASPP
-from src.network.conv_based.CMUNeXt_FFT import CMUNeXt_FFT
 from src.network.transfomer_based.transformer_based_network import get_transformer_based_model
 
 
@@ -70,17 +68,6 @@ def load_model(model_path, args, device=torch.device("cuda" if torch.cuda.is_ava
             model = torch.nn.DataParallel(model)
     elif args.model == "CMUNeXt_DualGAG":
         model = cmunext_dualgag(num_classes=args.num_classes)
-        if torch.cuda.device_count() > 1:
-            print("Let's use", torch.cuda.device_count(), "GPUs!")
-            model = torch.nn.DataParallel(model)
-    elif args.model == "CMUNeXt_ASPP":
-        model = CMUNeXt_ASPP(num_classes=args.num_classes)
-        if torch.cuda.device_count() > 1:
-            print("Let's use", torch.cuda.device_count(), "GPUs!")
-            model = torch.nn.DataParallel(model)
-
-    elif args.model == "CMUNeXt_FFT":
-        model = CMUNeXt_FFT(num_classes=args.num_classes)
         if torch.cuda.device_count() > 1:
             print("Let's use", torch.cuda.device_count(), "GPUs!")
             model = torch.nn.DataParallel(model)
@@ -195,7 +182,7 @@ if __name__ == "__main__":
     model_choices = [
         "CMUNet", "CMUNeXt", "CMUNeXt_MKDC", "CMUNeXt_GAG", "CMUNeXt_CMFA",
         "CMUNeXt_PresenceAux", "CMUNeXt_BoundaryDS", "CMUNeXt_DualGAG",
-        "CMUNeXt_DLK", "U_Net", "AttU_Net", "UNext", "UNetplus", "UNet3plus",
+        "U_Net", "AttU_Net", "UNext", "UNetplus", "UNet3plus",
         "TransUnet", "SwinUnet", "MedT", "Mobile_U_ViT"
     ]
     parser.add_argument('--model', type=str, default="U_Net",
