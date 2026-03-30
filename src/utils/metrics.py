@@ -1,4 +1,6 @@
+import numpy as np
 import torch
+import torch.nn.functional as F
 
 
 def get_accuracy(SR, GT, threshold=0.5):
@@ -64,6 +66,64 @@ def iou_score(output, target):
     ACC = get_accuracy(output_, target_, threshold=0.5)
     F1 = 2*SE*PC/(SE+PC + 1e-6)
     return iou, dice, SE, PC, F1, SP, ACC
+
+
+def _mask_to_boundary(mask):
+    if mask.dim() == 3:
+        mask = mask.squeeze(0)
+
+    mask = mask.bool()
+    if not mask.any():
+        return mask
+
+    mask_float = mask.float().unsqueeze(0).unsqueeze(0)
+    kernel = torch.ones((1, 1, 3, 3), dtype=mask_float.dtype, device=mask_float.device)
+    eroded = F.conv2d(mask_float, kernel, padding=1) == 9
+    eroded = eroded.squeeze(0).squeeze(0)
+    boundary = mask & (~eroded)
+    return boundary if boundary.any() else mask
+
+
+def boundary_scores(output, target):
+    if torch.is_tensor(output):
+        output = (torch.sigmoid(output).detach().cpu() > 0.5)
+    else:
+        output = torch.tensor(output > 0.5)
+
+    if torch.is_tensor(target):
+        target = (target.detach().cpu() > 0.5)
+    else:
+        target = torch.tensor(target > 0.5)
+
+    hd95_list = []
+    assd_list = []
+
+    for pred_mask, gt_mask in zip(output, target):
+        pred_mask = pred_mask.squeeze(0).bool()
+        gt_mask = gt_mask.squeeze(0).bool()
+
+        pred_boundary = _mask_to_boundary(pred_mask)
+        gt_boundary = _mask_to_boundary(gt_mask)
+        pred_points = torch.nonzero(pred_boundary, as_tuple=False).float()
+        gt_points = torch.nonzero(gt_boundary, as_tuple=False).float()
+
+        h, w = pred_mask.shape[-2:]
+        fallback = float((h ** 2 + w ** 2) ** 0.5)
+
+        if pred_points.numel() == 0 and gt_points.numel() == 0:
+            distances = np.array([0.0], dtype=np.float32)
+        elif pred_points.numel() == 0 or gt_points.numel() == 0:
+            distances = np.array([fallback], dtype=np.float32)
+        else:
+            pairwise = torch.cdist(pred_points, gt_points, p=2)
+            pred_to_gt = pairwise.min(dim=1).values.cpu().numpy()
+            gt_to_pred = pairwise.min(dim=0).values.cpu().numpy()
+            distances = np.concatenate([pred_to_gt, gt_to_pred], axis=0)
+
+        hd95_list.append(float(np.percentile(distances, 95)))
+        assd_list.append(float(distances.mean()))
+
+    return float(np.mean(hd95_list)), float(np.mean(assd_list))
 
 
 def dice_coef(output, target):

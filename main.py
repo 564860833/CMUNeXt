@@ -19,7 +19,7 @@ from albumentations import RandomRotate90, Resize, ElasticTransform, GridDistort
 
 import src.utils.losses as losses
 from src.utils.util import AverageMeter
-from src.utils.metrics import iou_score
+from src.utils.metrics import iou_score, boundary_scores
 
 from src.network.conv_based.CMUNet import CMUNet
 from src.network.conv_based.U_Net import U_Net
@@ -32,6 +32,9 @@ from src.network.conv_based.CMUNeXt import cmunext
 from src.network.conv_based.CMUNeXt_MKDC import cmunext_mkdc
 from src.network.conv_based.CMUNeXt_GAG import cmunext_gag
 from src.network.conv_based.CMUNeXt_CMFA import cmunext_cmfa
+from src.network.conv_based.CMUNeXt_PresenceAux import cmunext_presenceaux, PresenceAuxLoss
+from src.network.conv_based.CMUNeXt_BoundaryDS import cmunext_boundaryds, BoundaryDeepSupervisionLoss
+from src.network.conv_based.CMUNeXt_DualGAG import cmunext_dualgag
 
 from src.network.conv_based.CMUNeXt_GMSF_ASPP import CMUNeXt_GMSF_ASPP
 from src.network.conv_based.CMUNeXt_ASPP import CMUNeXt_ASPP
@@ -59,7 +62,9 @@ def seed_torch(seed):
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--model', type=str, default="Mobile_U_ViT",
-                    choices=["Mobile_U_ViT", "CMUNeXt","CMUNeXt_MKDC", "CMUNeXt_GAG", "CMUNeXt_CMFA","CMUNeXt_LKA","CMUNeXt_ASPP", "CMUNeXt_GMSF_ASPP", "CMUNeXt_FFT","CMUNeXt_ASPP_FFT", "CMUNet",
+                    choices=["Mobile_U_ViT", "CMUNeXt","CMUNeXt_MKDC", "CMUNeXt_GAG", "CMUNeXt_CMFA", "CMUNeXt_PresenceAux",
+                             "CMUNeXt_BoundaryDS", "CMUNeXt_DualGAG", "CMUNeXt_LKA","CMUNeXt_ASPP", "CMUNeXt_GMSF_ASPP",
+                             "CMUNeXt_FFT","CMUNeXt_ASPP_FFT", "CMUNet",
                               "AttU_Net", "TransUnet", "R2U_Net", "U_Net",
                              "UNext", "UNetplus", "UNet3plus", "SwinUnet", "MedT", "TransUnet"], help='model')
 parser.add_argument('--base_dir', type=str, default="./data/busi", help='dir')
@@ -89,6 +94,12 @@ def get_model(args):
         model = cmunext_gag(num_classes=args.num_classes).cuda()
     elif args.model == "CMUNeXt_CMFA":
         model = cmunext_cmfa(num_classes=args.num_classes).cuda()
+    elif args.model == "CMUNeXt_PresenceAux":
+        model = cmunext_presenceaux(num_classes=args.num_classes).cuda()
+    elif args.model == "CMUNeXt_BoundaryDS":
+        model = cmunext_boundaryds(num_classes=args.num_classes).cuda()
+    elif args.model == "CMUNeXt_DualGAG":
+        model = cmunext_dualgag(num_classes=args.num_classes).cuda()
     elif args.model == "CMUNeXt_LKA":
         model = CMUNeXt_LKA(num_classes=args.num_classes).cuda()
     elif args.model == "CMUNeXt_ASPP":
@@ -115,6 +126,26 @@ def get_model(args):
         model = get_transformer_based_model(parser=parser, model_name=args.model, img_size=args.img_size,
                                             num_classes=args.num_classes, in_ch=3).cuda()
     return model
+
+
+def get_criterion(args):
+    if args.model == "CMUNeXt_PresenceAux":
+        return PresenceAuxLoss().cuda()
+    if args.model == "CMUNeXt_BoundaryDS":
+        return BoundaryDeepSupervisionLoss().cuda()
+    return losses.__dict__['BCEDiceLoss']().cuda()
+
+
+def forward_with_model(args, model, x, return_aux=True):
+    if args.model in {"CMUNeXt_PresenceAux", "CMUNeXt_BoundaryDS"}:
+        return model(x, return_aux=return_aux)
+    return model(x)
+
+
+def get_seg_logits(outputs):
+    if isinstance(outputs, dict):
+        return outputs['seg']
+    return outputs
 
 
 def getDataloader(args):
@@ -192,7 +223,7 @@ def main(args):
     logging.info("train file dir:{} val file dir:{}".format(args.train_file_dir, args.val_file_dir))
 
     optimizer = optim.SGD(model.parameters(), lr=base_lr, momentum=0.9, weight_decay=0.0001)
-    criterion = losses.__dict__['BCEDiceLoss']().cuda()
+    criterion = get_criterion(args)
 
     # <=== 修改 7: 将 print 替换为 logging.info
     logging.info("{} iterations per epoch".format(len(trainloader)))
@@ -218,6 +249,9 @@ def main(args):
                       'val_SE': AverageMeter(),
                       'val_PC': AverageMeter(),
                       'val_F1': AverageMeter(),
+                      'val_SP': AverageMeter(),
+                      'val_HD95': AverageMeter(),
+                      'val_ASSD': AverageMeter(),
                       'val_ACC': AverageMeter()}
 
         # (您修改的部分)
@@ -227,10 +261,11 @@ def main(args):
             img_batch, label_batch = sampled_batch['image'], sampled_batch['label']
             img_batch, label_batch = img_batch.cuda(), label_batch.cuda()
 
-            outputs = model(img_batch)
+            outputs = forward_with_model(args, model, img_batch)
+            seg_logits = get_seg_logits(outputs)
 
             loss = criterion(outputs, label_batch)
-            iou, dice, _, _, _, _, _ = iou_score(outputs, label_batch)
+            iou, dice, _, _, _, _, _ = iou_score(seg_logits, label_batch)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -252,14 +287,20 @@ def main(args):
             for i_batch, sampled_batch in enumerate(val_bar):
                 img_batch, label_batch = sampled_batch['image'], sampled_batch['label']
                 img_batch, label_batch = img_batch.cuda(), label_batch.cuda()
-                output = model(img_batch)
+                output = forward_with_model(args, model, img_batch)
+                seg_logits = get_seg_logits(output)
                 loss = criterion(output, label_batch)
-                iou, _, SE, PC, F1, _, ACC = iou_score(output, label_batch)
+                iou, _, SE, PC, F1, SP, ACC = iou_score(seg_logits, label_batch)
                 avg_meters['val_loss'].update(loss.item(), img_batch.size(0))
                 avg_meters['val_iou'].update(iou, img_batch.size(0))
                 avg_meters['val_SE'].update(SE, img_batch.size(0))
                 avg_meters['val_PC'].update(PC, img_batch.size(0))
                 avg_meters['val_F1'].update(F1, img_batch.size(0))
+                avg_meters['val_SP'].update(SP, img_batch.size(0))
+                if args.model == "CMUNeXt_BoundaryDS":
+                    hd95, assd = boundary_scores(seg_logits, label_batch)
+                    avg_meters['val_HD95'].update(hd95, img_batch.size(0))
+                    avg_meters['val_ASSD'].update(assd, img_batch.size(0))
                 avg_meters['val_ACC'].update(ACC, img_batch.size(0))
 
                 val_bar.set_postfix(val_loss=avg_meters['val_loss'].avg, val_iou=avg_meters['val_iou'].avg)
@@ -268,13 +309,24 @@ def main(args):
         elapsed_time = time.time() - start_time
         elapsed_str = time.strftime('%H:%M:%S', time.gmtime(elapsed_time))
 
-        logging.info(
-            'epoch [%d/%d] (Total time: %s)  train_loss : %.4f, train_iou: %.4f - val_loss %.4f - val_iou %.4f - val_SE %.4f - '
-            'val_PC %.4f - val_F1 %.4f - val_ACC %.4f '
-            % (epoch_num, max_epoch, elapsed_str,
-               avg_meters['loss'].avg, avg_meters['iou'].avg,
-               avg_meters['val_loss'].avg, avg_meters['val_iou'].avg, avg_meters['val_SE'].avg,
-               avg_meters['val_PC'].avg, avg_meters['val_F1'].avg, avg_meters['val_ACC'].avg))
+        if args.model == "CMUNeXt_BoundaryDS":
+            logging.info(
+                'epoch [%d/%d] (Total time: %s)  train_loss : %.4f, train_iou: %.4f - val_loss %.4f - val_iou %.4f - '
+                'val_SE %.4f - val_PC %.4f - val_F1 %.4f - val_SP %.4f - val_HD95 %.4f - val_ASSD %.4f - val_ACC %.4f '
+                % (epoch_num, max_epoch, elapsed_str,
+                   avg_meters['loss'].avg, avg_meters['iou'].avg,
+                   avg_meters['val_loss'].avg, avg_meters['val_iou'].avg, avg_meters['val_SE'].avg,
+                   avg_meters['val_PC'].avg, avg_meters['val_F1'].avg, avg_meters['val_SP'].avg,
+                   avg_meters['val_HD95'].avg, avg_meters['val_ASSD'].avg, avg_meters['val_ACC'].avg))
+        else:
+            logging.info(
+                'epoch [%d/%d] (Total time: %s)  train_loss : %.4f, train_iou: %.4f - val_loss %.4f - val_iou %.4f - '
+                'val_SE %.4f - val_PC %.4f - val_F1 %.4f - val_SP %.4f - val_ACC %.4f '
+                % (epoch_num, max_epoch, elapsed_str,
+                   avg_meters['loss'].avg, avg_meters['iou'].avg,
+                   avg_meters['val_loss'].avg, avg_meters['val_iou'].avg, avg_meters['val_SE'].avg,
+                   avg_meters['val_PC'].avg, avg_meters['val_F1'].avg, avg_meters['val_SP'].avg,
+                   avg_meters['val_ACC'].avg))
         # <=========================================
 
         train_loss_history.append(avg_meters['loss'].avg)
