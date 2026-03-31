@@ -28,7 +28,7 @@ class up_conv(nn.Module):
     def __init__(self, ch_in, ch_out):
         super().__init__()
         self.up = nn.Sequential(
-            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True),
+            nn.Upsample(scale_factor=2, mode="bilinear"),
             nn.Conv2d(ch_in, ch_out, kernel_size=3, stride=1, padding=1, bias=True),
             nn.BatchNorm2d(ch_out),
             nn.ReLU(inplace=True),
@@ -97,40 +97,63 @@ class CMUNeXtBlock(nn.Module):
 class DualGatedAttentionGate(nn.Module):
     def __init__(self, F_g, F_l, F_int, groups=4, reduction=8):
         super().__init__()
-        actual_groups = groups if F_int % groups == 0 else 1
+        actual_groups = groups if (F_int % groups == 0 and F_l % groups == 0) else 1
+        self.groups = actual_groups
 
+        # Align decoder and skip features with stable 1x1 projections first.
         self.W_g = nn.Sequential(
-            nn.Conv2d(F_g, F_int, kernel_size=3, stride=1, padding=1, groups=actual_groups, bias=False),
+            nn.Conv2d(F_g, F_int, kernel_size=1, stride=1, padding=0, bias=False),
             nn.BatchNorm2d(F_int),
         )
         self.W_x = nn.Sequential(
-            nn.Conv2d(F_l, F_int, kernel_size=3, stride=1, padding=1, groups=actual_groups, bias=False),
+            nn.Conv2d(F_l, F_int, kernel_size=1, stride=1, padding=0, bias=False),
             nn.BatchNorm2d(F_int),
         )
-        self.spatial_gate = nn.Sequential(
-            nn.ReLU(inplace=True),
-            nn.Conv2d(F_int, 1, kernel_size=1, stride=1, padding=0, bias=True),
-            nn.Sigmoid(),
+        self.refine = nn.Sequential(
+            nn.Conv2d(F_int, F_int, kernel_size=3, stride=1, padding=1, groups=actual_groups, bias=False),
+            nn.BatchNorm2d(F_int),
+            nn.GELU(),
         )
+        self.spatial_gate = nn.Conv2d(F_int, actual_groups, kernel_size=1, stride=1, padding=0, bias=True)
+        self.spatial_scale = nn.Parameter(torch.full((actual_groups,), 0.1))
 
-        channel_in = F_g + F_l
-        channel_mid = max(8, channel_in // reduction)
+        channel_mid = max(8, F_int // reduction)
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.max_pool = nn.AdaptiveMaxPool2d(1)
         self.channel_mlp = nn.Sequential(
-            nn.Conv2d(channel_in, channel_mid, kernel_size=1, bias=False),
+            nn.Conv2d(F_int, channel_mid, kernel_size=1, bias=False),
             nn.ReLU(inplace=True),
             nn.Conv2d(channel_mid, F_l, kernel_size=1, bias=False),
         )
-        self.channel_act = nn.Sigmoid()
+        self.channel_scale = nn.Parameter(torch.tensor(0.1))
+        self.relu = nn.ReLU(inplace=True)
 
     def forward(self, g, x):
-        spatial_mask = self.spatial_gate(self.W_g(g) + self.W_x(x))
-        joint = torch.cat([g, x], dim=1)
-        channel_mask = self.channel_act(
-            self.channel_mlp(self.avg_pool(joint)) + self.channel_mlp(self.max_pool(joint))
-        )
-        return x * spatial_mask * channel_mask + x
+        fused = self.relu(self.W_g(g) + self.W_x(x))
+        fused = self.refine(fused)
+
+        # Center both gates around 1 so they can suppress or enhance the skip,
+        # instead of always amplifying it as in the previous implementation.
+        spatial_gate = torch.sigmoid(self.spatial_gate(fused))
+        spatial_gate = 2.0 * spatial_gate - 1.0
+        spatial_gate = 1.0 + torch.tanh(self.spatial_scale).view(1, self.groups, 1, 1) * spatial_gate
+
+        if self.groups == 1:
+            spatial_mod = spatial_gate
+        else:
+            spatial_mod = []
+            for group_idx, chunk in enumerate(torch.chunk(x, self.groups, dim=1)):
+                spatial_mod.append(
+                    spatial_gate[:, group_idx:group_idx + 1].expand(-1, chunk.size(1), -1, -1)
+                )
+            spatial_mod = torch.cat(spatial_mod, dim=1)
+
+        channel_gate = self.channel_mlp(self.avg_pool(fused)) + self.channel_mlp(self.max_pool(fused))
+        channel_gate = torch.sigmoid(channel_gate)
+        channel_gate = 2.0 * channel_gate - 1.0
+        channel_gate = 1.0 + torch.tanh(self.channel_scale) * channel_gate
+
+        return x * spatial_mod * channel_gate
 
 
 class CMUNeXt_DualGAG(nn.Module):
@@ -141,8 +164,10 @@ class CMUNeXt_DualGAG(nn.Module):
         dims=(16, 32, 128, 160, 256),
         depths=(1, 1, 1, 3, 1),
         kernels=(3, 3, 7, 7, 7),
+        use_shallow_gates=False,
     ):
         super().__init__()
+        self.use_shallow_gates = use_shallow_gates
         self.Maxpool = nn.MaxPool2d(kernel_size=2, stride=2)
 
         self.stem = conv_block(ch_in=input_channel, ch_out=dims[0])
@@ -162,10 +187,14 @@ class CMUNeXt_DualGAG(nn.Module):
         self.Up_conv2 = fusion_conv(ch_in=dims[0] * 2, ch_out=dims[0])
         self.Conv_1x1 = nn.Conv2d(dims[0], num_classes, kernel_size=1, stride=1, padding=0)
 
+        # Restrict dual attention to deeper skips by default. Shallow BUSI skip
+        # features carry fine boundaries, and gating all scales tended to trade
+        # precision for recall without lifting IoU.
         self.gag5 = DualGatedAttentionGate(F_g=dims[3], F_l=dims[3], F_int=max(8, dims[3] // 2), groups=4)
         self.gag4 = DualGatedAttentionGate(F_g=dims[2], F_l=dims[2], F_int=max(8, dims[2] // 2), groups=4)
-        self.gag3 = DualGatedAttentionGate(F_g=dims[1], F_l=dims[1], F_int=max(8, dims[1] // 2), groups=4)
-        self.gag2 = DualGatedAttentionGate(F_g=dims[0], F_l=dims[0], F_int=max(8, dims[0] // 2), groups=2)
+        if self.use_shallow_gates:
+            self.gag3 = DualGatedAttentionGate(F_g=dims[1], F_l=dims[1], F_int=max(8, dims[1] // 2), groups=4)
+            self.gag2 = DualGatedAttentionGate(F_g=dims[0], F_l=dims[0], F_int=max(8, dims[0] // 2), groups=2)
 
     def forward(self, x):
         x1 = self.stem(x)
@@ -192,11 +221,11 @@ class CMUNeXt_DualGAG(nn.Module):
         d4 = self.Up_conv4(torch.cat((x3_p, d4), dim=1))
 
         d3 = self.Up3(d4)
-        x2_p = self.gag3(g=d3, x=x2)
+        x2_p = self.gag3(g=d3, x=x2) if self.use_shallow_gates else x2
         d3 = self.Up_conv3(torch.cat((x2_p, d3), dim=1))
 
         d2 = self.Up2(d3)
-        x1_p = self.gag2(g=d2, x=x1)
+        x1_p = self.gag2(g=d2, x=x1) if self.use_shallow_gates else x1
         d2 = self.Up_conv2(torch.cat((x1_p, d2), dim=1))
 
         return self.Conv_1x1(d2)

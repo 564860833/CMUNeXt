@@ -29,7 +29,7 @@ class up_conv(nn.Module):
     def __init__(self, ch_in, ch_out):
         super().__init__()
         self.up = nn.Sequential(
-            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True),
+            nn.Upsample(scale_factor=2, mode="bilinear"),
             nn.Conv2d(ch_in, ch_out, kernel_size=3, stride=1, padding=1, bias=True),
             nn.BatchNorm2d(ch_out),
             nn.ReLU(inplace=True),
@@ -108,7 +108,7 @@ class BoundaryHead(nn.Module):
 
     def forward(self, x, out_size):
         x = self.head(x)
-        return F.interpolate(x, size=out_size, mode="bilinear", align_corners=True)
+        return F.interpolate(x, size=out_size, mode="bilinear")
 
 
 class CMUNeXt_BoundaryDS(nn.Module):
@@ -208,37 +208,56 @@ def dice_loss_with_logits(logits, targets, smooth=1.0):
 
 @torch.no_grad()
 def build_boundary_target(mask, kernel_size=3):
-    mask = mask.float()
+    # Match the thin inner-boundary definition used by boundary_scores() so
+    # the auxiliary supervision optimizes for the same contour notion that the
+    # validation metrics later measure.
+    mask = (mask > 0.5).float()
     pad = kernel_size // 2
-    dil = F.max_pool2d(mask, kernel_size=kernel_size, stride=1, padding=pad)
     ero = -F.max_pool2d(-mask, kernel_size=kernel_size, stride=1, padding=pad)
-    edge = (dil - ero) > 0
+    edge = (mask - ero) > 0
     return edge.float()
 
 
 class BoundaryDeepSupervisionLoss(nn.Module):
-    def __init__(self, edge_weight=0.3, seg_bce_weight=1.0, seg_dice_weight=1.0):
+    def __init__(self, edge_weight=0.2, seg_bce_weight=1.0, seg_dice_weight=1.0):
         super().__init__()
         self.edge_weight = edge_weight
         self.seg_bce_weight = seg_bce_weight
         self.seg_dice_weight = seg_dice_weight
+        self.edge_loss_weights = {
+            "edge2": 1.0,
+            "edge3": 0.5,
+            "edge4": 0.25,
+            "edge5": 0.25,
+        }
 
     def forward(self, outputs, mask):
         seg_logit = outputs["seg"]
         edge_logits = outputs["edges"]
         mask = mask.float()
         edge_target = build_boundary_target(mask)
+        valid_edge_samples = (mask.flatten(1).sum(dim=1) > 0)
 
         seg_bce = F.binary_cross_entropy_with_logits(seg_logit, mask)
         seg_dice = dice_loss_with_logits(seg_logit, mask)
         seg_loss = self.seg_bce_weight * seg_bce + self.seg_dice_weight * seg_dice
 
-        edge_losses = []
-        for edge_logit in edge_logits.values():
-            edge_bce = F.binary_cross_entropy_with_logits(edge_logit, edge_target)
-            edge_dice = dice_loss_with_logits(edge_logit, edge_target)
-            edge_losses.append(edge_bce + edge_dice)
-        edge_loss = torch.stack(edge_losses).mean() if edge_losses else seg_logit.new_tensor(0.0)
+        weighted_edge_loss = seg_logit.new_tensor(0.0)
+        total_edge_weight = 0.0
+        if valid_edge_samples.any():
+            edge_target_valid = edge_target[valid_edge_samples]
+            for edge_name, edge_logit in edge_logits.items():
+                edge_weight = self.edge_loss_weights.get(edge_name, 1.0)
+                edge_logit_valid = edge_logit[valid_edge_samples]
+                edge_bce = F.binary_cross_entropy_with_logits(edge_logit_valid, edge_target_valid)
+                edge_dice = dice_loss_with_logits(edge_logit_valid, edge_target_valid)
+                weighted_edge_loss = weighted_edge_loss + edge_weight * (edge_bce + edge_dice)
+                total_edge_weight += edge_weight
+
+        if total_edge_weight > 0:
+            edge_loss = weighted_edge_loss / total_edge_weight
+        else:
+            edge_loss = seg_logit.new_tensor(0.0)
 
         total = seg_loss + self.edge_weight * edge_loss
         return total, {

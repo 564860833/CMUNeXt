@@ -287,10 +287,9 @@ def main(args):
                 avg_meters['val_PC'].update(PC, img_batch.size(0))
                 avg_meters['val_F1'].update(F1, img_batch.size(0))
                 avg_meters['val_SP'].update(SP, img_batch.size(0))
-                if args.model == "CMUNeXt_BoundaryDS":
-                    hd95, assd = boundary_scores(seg_logits, label_batch)
-                    avg_meters['val_HD95'].update(hd95, img_batch.size(0))
-                    avg_meters['val_ASSD'].update(assd, img_batch.size(0))
+                hd95, assd = boundary_scores(seg_logits, label_batch)
+                avg_meters['val_HD95'].update(hd95, img_batch.size(0))
+                avg_meters['val_ASSD'].update(assd, img_batch.size(0))
                 avg_meters['val_ACC'].update(ACC, img_batch.size(0))
 
                 val_bar.set_postfix(val_loss=avg_meters['val_loss'].avg, val_iou=avg_meters['val_iou'].avg)
@@ -299,24 +298,14 @@ def main(args):
         elapsed_time = time.time() - start_time
         elapsed_str = time.strftime('%H:%M:%S', time.gmtime(elapsed_time))
 
-        if args.model == "CMUNeXt_BoundaryDS":
-            logging.info(
-                'epoch [%d/%d] (Total time: %s)  train_loss : %.4f, train_iou: %.4f - val_loss %.4f - val_iou %.4f - '
-                'val_SE %.4f - val_PC %.4f - val_F1 %.4f - val_SP %.4f - val_HD95 %.4f - val_ASSD %.4f - val_ACC %.4f '
-                % (epoch_num, max_epoch, elapsed_str,
-                   avg_meters['loss'].avg, avg_meters['iou'].avg,
-                   avg_meters['val_loss'].avg, avg_meters['val_iou'].avg, avg_meters['val_SE'].avg,
-                   avg_meters['val_PC'].avg, avg_meters['val_F1'].avg, avg_meters['val_SP'].avg,
-                   avg_meters['val_HD95'].avg, avg_meters['val_ASSD'].avg, avg_meters['val_ACC'].avg))
-        else:
-            logging.info(
-                'epoch [%d/%d] (Total time: %s)  train_loss : %.4f, train_iou: %.4f - val_loss %.4f - val_iou %.4f - '
-                'val_SE %.4f - val_PC %.4f - val_F1 %.4f - val_SP %.4f - val_ACC %.4f '
-                % (epoch_num, max_epoch, elapsed_str,
-                   avg_meters['loss'].avg, avg_meters['iou'].avg,
-                   avg_meters['val_loss'].avg, avg_meters['val_iou'].avg, avg_meters['val_SE'].avg,
-                   avg_meters['val_PC'].avg, avg_meters['val_F1'].avg, avg_meters['val_SP'].avg,
-                   avg_meters['val_ACC'].avg))
+        logging.info(
+            'epoch [%d/%d] (Total time: %s)  train_loss : %.4f, train_iou: %.4f - val_loss %.4f - val_iou %.4f - '
+            'val_SE %.4f - val_PC %.4f - val_F1 %.4f - val_SP %.4f - val_HD95 %.4f - val_ASSD %.4f - val_ACC %.4f '
+            % (epoch_num, max_epoch, elapsed_str,
+               avg_meters['loss'].avg, avg_meters['iou'].avg,
+               avg_meters['val_loss'].avg, avg_meters['val_iou'].avg, avg_meters['val_SE'].avg,
+               avg_meters['val_PC'].avg, avg_meters['val_F1'].avg, avg_meters['val_SP'].avg,
+               avg_meters['val_HD95'].avg, avg_meters['val_ASSD'].avg, avg_meters['val_ACC'].avg))
         # <=========================================
 
         train_loss_history.append(avg_meters['loss'].avg)
