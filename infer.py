@@ -25,6 +25,7 @@ from src.network.conv_based.CMUNeXt_PresenceAux import cmunext_presenceaux
 from src.network.conv_based.CMUNeXt_BoundaryDS import cmunext_boundaryds
 from src.network.conv_based.CMUNeXt_DistanceAux import cmunext_distanceaux
 from src.network.conv_based.CMUNeXt_DualGAG import cmunext_dualgag
+from src.network.conv_based.CMUNeXt_DualGAG_DistanceAux import cmunext_dualgag_distanceaux
 from src.network.transfomer_based.transformer_based_network import get_transformer_based_model
 
 
@@ -77,6 +78,11 @@ def load_model(model_path, args, device=torch.device("cuda" if torch.cuda.is_ava
         if torch.cuda.device_count() > 1:
             print("Let's use", torch.cuda.device_count(), "GPUs!")
             model = torch.nn.DataParallel(model)
+    elif args.model == "CMUNeXt_DualGAG_DistanceAux":
+        model = cmunext_dualgag_distanceaux(num_classes=args.num_classes)
+        if torch.cuda.device_count() > 1:
+            print("Let's use", torch.cuda.device_count(), "GPUs!")
+            model = torch.nn.DataParallel(model)
     elif args.model == "U_Net":
         model = U_Net(output_ch=args.num_classes)
         if torch.cuda.device_count() > 1:
@@ -121,7 +127,8 @@ def load_model(model_path, args, device=torch.device("cuda" if torch.cuda.is_ava
 
 
 def forward_with_model(model, model_name, x):
-    if model_name in {"CMUNeXt_PresenceAux", "CMUNeXt_BoundaryDS", "CMUNeXt_DistanceAux"}:
+    if model_name in {"CMUNeXt_PresenceAux", "CMUNeXt_BoundaryDS", "CMUNeXt_DistanceAux",
+                      "CMUNeXt_DualGAG_DistanceAux"}:
         return model(x, return_aux=False)
     return model(x)
 
@@ -187,7 +194,8 @@ if __name__ == "__main__":
     # 我们将 main.py 中的 transformer 模型也加入列表
     model_choices = [
         "CMUNet", "CMUNeXt", "CMUNeXt_MKDC", "CMUNeXt_GAG", "CMUNeXt_CMFA",
-        "CMUNeXt_PresenceAux", "CMUNeXt_BoundaryDS", "CMUNeXt_DistanceAux", "CMUNeXt_DualGAG",
+        "CMUNeXt_PresenceAux", "CMUNeXt_BoundaryDS", "CMUNeXt_DistanceAux",
+        "CMUNeXt_DualGAG", "CMUNeXt_DualGAG_DistanceAux",
         "U_Net", "AttU_Net", "UNext", "UNetplus", "UNet3plus",
         "TransUnet", "SwinUnet", "MedT", "Mobile_U_ViT"
     ]
