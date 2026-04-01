@@ -1,6 +1,28 @@
 import os
 from torch.utils.data import Dataset
 import cv2
+import numpy as np
+
+try:
+    from scipy.ndimage import distance_transform_edt
+except ImportError:
+    distance_transform_edt = None
+
+
+def build_signed_distance_target(mask, max_distance=32.0):
+    if distance_transform_edt is None:
+        raise ImportError("DistanceAux data preparation requires scipy.")
+
+    foreground = mask[..., 0] > 0.5
+    target = np.zeros_like(mask, dtype=np.float32)
+    if not foreground.any():
+        return target
+
+    pos_dist = distance_transform_edt(foreground)
+    neg_dist = distance_transform_edt(~foreground)
+    signed_distance = (neg_dist - pos_dist) / float(max_distance)
+    target[..., 0] = np.clip(signed_distance, -1.0, 1.0)
+    return target
 
 
 class MedicalDataSets(Dataset):
@@ -11,6 +33,8 @@ class MedicalDataSets(Dataset):
             transform=None,
             train_file_dir="train.txt",
             val_file_dir="val.txt",
+            use_distance_aux=False,
+            distance_max=32.0,
     ):
         self._base_dir = base_dir
         self.sample_list = []
@@ -18,6 +42,8 @@ class MedicalDataSets(Dataset):
         self.transform = transform
         self.train_list = []
         self.semi_list = []
+        self.use_distance_aux = use_distance_aux
+        self.distance_max = distance_max
 
         if self.split == "train":
             with open(os.path.join(self._base_dir, train_file_dir), "r") as f1:
@@ -77,7 +103,12 @@ class MedicalDataSets(Dataset):
         image = image.transpose(2, 0, 1)
 
         label = label.astype('float32') / 255
+        distance_target = None
+        if self.use_distance_aux:
+            distance_target = build_signed_distance_target(label, max_distance=self.distance_max)
         label = label.transpose(2, 0, 1)
 
         sample = {"image": image, "label": label, "idx": idx}
+        if distance_target is not None:
+            sample["distance_target"] = distance_target.transpose(2, 0, 1)
         return sample

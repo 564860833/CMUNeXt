@@ -34,6 +34,7 @@ from src.network.conv_based.CMUNeXt_GAG import cmunext_gag
 from src.network.conv_based.CMUNeXt_CMFA import cmunext_cmfa
 from src.network.conv_based.CMUNeXt_PresenceAux import cmunext_presenceaux, PresenceAuxLoss
 from src.network.conv_based.CMUNeXt_BoundaryDS import cmunext_boundaryds, BoundaryDeepSupervisionLoss
+from src.network.conv_based.CMUNeXt_DistanceAux import cmunext_distanceaux, DistanceAuxLoss
 from src.network.conv_based.CMUNeXt_DualGAG import cmunext_dualgag
 
 
@@ -58,7 +59,7 @@ def seed_torch(seed):
 parser = argparse.ArgumentParser()
 parser.add_argument('--model', type=str, default="Mobile_U_ViT",
                     choices=["Mobile_U_ViT", "CMUNeXt","CMUNeXt_MKDC", "CMUNeXt_GAG", "CMUNeXt_CMFA", "CMUNeXt_PresenceAux",
-                             "CMUNeXt_BoundaryDS", "CMUNeXt_DualGAG", "CMUNet",
+                             "CMUNeXt_BoundaryDS", "CMUNeXt_DistanceAux", "CMUNeXt_DualGAG", "CMUNet",
                               "AttU_Net", "TransUnet", "R2U_Net", "U_Net",
                              "UNext", "UNetplus", "UNet3plus", "SwinUnet", "MedT", "TransUnet"], help='model')
 parser.add_argument('--base_dir', type=str, default="./data/busi", help='dir')
@@ -92,6 +93,8 @@ def get_model(args):
         model = cmunext_presenceaux(num_classes=args.num_classes).cuda()
     elif args.model == "CMUNeXt_BoundaryDS":
         model = cmunext_boundaryds(num_classes=args.num_classes).cuda()
+    elif args.model == "CMUNeXt_DistanceAux":
+        model = cmunext_distanceaux(num_classes=args.num_classes).cuda()
     elif args.model == "CMUNeXt_DualGAG":
         model = cmunext_dualgag(num_classes=args.num_classes).cuda()
     elif args.model == "U_Net":
@@ -117,11 +120,13 @@ def get_criterion(args):
         return PresenceAuxLoss().cuda()
     if args.model == "CMUNeXt_BoundaryDS":
         return BoundaryDeepSupervisionLoss().cuda()
+    if args.model == "CMUNeXt_DistanceAux":
+        return DistanceAuxLoss().cuda()
     return losses.__dict__['BCEDiceLoss']().cuda()
 
 
 def forward_with_model(args, model, x, return_aux=True):
-    if args.model in {"CMUNeXt_PresenceAux", "CMUNeXt_BoundaryDS"}:
+    if args.model in {"CMUNeXt_PresenceAux", "CMUNeXt_BoundaryDS", "CMUNeXt_DistanceAux"}:
         return model(x, return_aux=return_aux)
     return model(x)
 
@@ -138,7 +143,39 @@ def get_loss_tensor(loss_output):
     return loss_output
 
 
-def getDataloader(args):
+def get_distance_aux_weight(args, criterion, epoch_num, max_epoch):
+    if args.model != "CMUNeXt_DistanceAux" or not hasattr(criterion, "dist_weight"):
+        return None
+
+    base_weight = criterion.dist_weight
+    warmup_start = max(5, int(max_epoch * 0.05))
+    warmup_end = max(warmup_start + 1, int(max_epoch * 0.15))
+    decay_start = max(warmup_end + 1, int(max_epoch * 0.60))
+    final_weight = base_weight * 0.2
+
+    if epoch_num < warmup_start:
+        return 0.0
+    if epoch_num < warmup_end:
+        progress = (epoch_num - warmup_start + 1) / max(1, warmup_end - warmup_start)
+        return base_weight * progress
+    if epoch_num < decay_start:
+        return base_weight
+
+    progress = (epoch_num - decay_start) / max(1, (max_epoch - 1) - decay_start)
+    cosine = 0.5 * (1.0 + np.cos(np.pi * progress))
+    return final_weight + (base_weight - final_weight) * cosine
+
+
+def compute_loss(args, criterion, outputs, label_batch, sampled_batch=None, aux_weight=None):
+    if args.model == "CMUNeXt_DistanceAux":
+        distance_target = None
+        if sampled_batch is not None and "distance_target" in sampled_batch:
+            distance_target = sampled_batch["distance_target"].cuda()
+        return criterion(outputs, label_batch, distance_target=distance_target, dist_weight=aux_weight)
+    return criterion(outputs, label_batch)
+
+
+def getDataloader(args, distance_max=None):
     img_size = args.img_size
     if args.model == "SwinUnet":
         img_size = 224
@@ -174,9 +211,13 @@ def getDataloader(args):
     ])
     db_train = MedicalDataSets(base_dir=args.base_dir, split="train",
                                transform=train_transform, train_file_dir=args.train_file_dir,
-                               val_file_dir=args.val_file_dir)
+                               val_file_dir=args.val_file_dir,
+                               use_distance_aux=args.model == "CMUNeXt_DistanceAux",
+                               distance_max=distance_max if distance_max is not None else 32.0)
     db_val = MedicalDataSets(base_dir=args.base_dir, split="val", transform=val_transform,
-                             train_file_dir=args.train_file_dir, val_file_dir=args.val_file_dir)
+                             train_file_dir=args.train_file_dir, val_file_dir=args.val_file_dir,
+                             use_distance_aux=args.model == "CMUNeXt_DistanceAux",
+                             distance_max=distance_max if distance_max is not None else 32.0)
     # <=== 修改 5: 将 print 替换为 logging.info
     logging.info("train num:{}, val num:{}".format(len(db_train), len(db_val)))
 
@@ -203,17 +244,16 @@ def main(args):
     # =================================
 
     base_lr = args.base_lr
-
-    trainloader, valloader = getDataloader(args=args)
-
     model = get_model(args)
+    criterion = get_criterion(args)
+    distance_max = criterion.max_distance if hasattr(criterion, "max_distance") else None
+    trainloader, valloader = getDataloader(args=args, distance_max=distance_max)
 
     # <=== 修改 6: 将 print 替换为 logging.info
     logging.info("Args: {}".format(args))  # 打印所有参数到日志
     logging.info("train file dir:{} val file dir:{}".format(args.train_file_dir, args.val_file_dir))
 
     optimizer = optim.SGD(model.parameters(), lr=base_lr, momentum=0.9, weight_decay=0.0001)
-    criterion = get_criterion(args)
 
     # <=== 修改 7: 将 print 替换为 logging.info
     logging.info("{} iterations per epoch".format(len(trainloader)))
@@ -232,6 +272,7 @@ def main(args):
 
     for epoch_num in range(max_epoch):
         model.train()
+        distance_aux_weight = get_distance_aux_weight(args, criterion, epoch_num, max_epoch)
         avg_meters = {'loss': AverageMeter(),
                       'iou': AverageMeter(),
                       'val_loss': AverageMeter(),
@@ -254,7 +295,9 @@ def main(args):
             outputs = forward_with_model(args, model, img_batch)
             seg_logits = get_seg_logits(outputs)
 
-            loss = get_loss_tensor(criterion(outputs, label_batch))
+            loss = get_loss_tensor(
+                compute_loss(args, criterion, outputs, label_batch, sampled_batch, distance_aux_weight)
+            )
             iou, dice, _, _, _, _, _ = iou_score(seg_logits, label_batch)
             optimizer.zero_grad()
             loss.backward()
@@ -279,7 +322,9 @@ def main(args):
                 img_batch, label_batch = img_batch.cuda(), label_batch.cuda()
                 output = forward_with_model(args, model, img_batch)
                 seg_logits = get_seg_logits(output)
-                loss = get_loss_tensor(criterion(output, label_batch))
+                loss = get_loss_tensor(
+                    compute_loss(args, criterion, output, label_batch, sampled_batch, distance_aux_weight)
+                )
                 iou, _, SE, PC, F1, SP, ACC = iou_score(seg_logits, label_batch)
                 avg_meters['val_loss'].update(loss.item(), img_batch.size(0))
                 avg_meters['val_iou'].update(iou, img_batch.size(0))
@@ -297,6 +342,8 @@ def main(args):
         # <=== 修改 8: 将 print 替换为 logging.info
         elapsed_time = time.time() - start_time
         elapsed_str = time.strftime('%H:%M:%S', time.gmtime(elapsed_time))
+        if distance_aux_weight is not None:
+            logging.info("distance_aux_weight: %.4f", distance_aux_weight)
 
         logging.info(
             'epoch [%d/%d] (Total time: %s)  train_loss : %.4f, train_iou: %.4f - val_loss %.4f - val_iou %.4f - '
@@ -377,10 +424,10 @@ if __name__ == "__main__":
 #  libgomp: Invalid value for environment variable OMP_NUM_THREADS：     export OMP_NUM_THREADS=4
 #  启动数据增强     --use_extra_aug
 
-# python main.py --model CMUNeXt --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/3.23/busi-CMUNeXt-3-c --base_lr 0.01 --epoch 300 --batch_size 8 --use_extra_aug
+# python main.py --model CMUNeXt --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/3.31/busi-CMUNeXt-3-c --base_lr 0.01 --epoch 300 --batch_size 8
 
-# python main.py --model CMUNeXt_MKDC --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/3.23/busi-CMUNeXt_MKDC-3-b --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model CMUNeXt_DualGAG --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/3.31/busi-CMUNeXt_DualGAG-3-b --base_lr 0.01 --epoch 300 --batch_size 8
 
-# python main.py --model CMUNeXt_GAG --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/3.23/busi-CMUNeXt_GAG-3-a --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model CMUNeXt_BoundaryDS --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/3.31/busi-CMUNeXt_BoundaryDS-3-c --base_lr 0.01 --epoch 300 --batch_size 8
 
-# python main.py --model CMUNeXt_CMFA --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/3.23/busi-CMUNeXt_CMFA-3-a --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model CMUNeXt_PresenceAux --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/3.23/busi-CMUNeXt_PresenceAux-3-a --base_lr 0.01 --epoch 300 --batch_size 8

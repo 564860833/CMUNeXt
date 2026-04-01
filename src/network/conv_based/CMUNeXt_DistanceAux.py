@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -95,23 +96,22 @@ class CMUNeXtBlock(nn.Module):
         return x
 
 
-class BoundaryHead(nn.Module):
+class DistanceHead(nn.Module):
     def __init__(self, in_channels):
         super().__init__()
-        mid_channels = max(16, in_channels // 2)
+        mid_channels = max(16, in_channels)
         self.head = nn.Sequential(
-            nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1, bias=False),
+            nn.Conv2d(in_channels, mid_channels, kernel_size=3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(mid_channels),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(mid_channels, 1, kernel_size=1),
+            nn.GELU(),
+            nn.Conv2d(mid_channels, 1, kernel_size=1, stride=1, padding=0),
         )
 
-    def forward(self, x, out_size):
-        x = self.head(x)
-        return F.interpolate(x, size=out_size, mode="bilinear")
+    def forward(self, x):
+        return self.head(x)
 
 
-class CMUNeXt_BoundaryDS(nn.Module):
+class CMUNeXt_DistanceAux(nn.Module):
     def __init__(
         self,
         input_channel=3,
@@ -119,12 +119,10 @@ class CMUNeXt_BoundaryDS(nn.Module):
         dims=(16, 32, 128, 160, 256),
         depths=(1, 1, 1, 3, 1),
         kernels=(3, 3, 7, 7, 7),
-        use_boundary_all_scales=False,
     ):
         super().__init__()
-        self.use_boundary_all_scales = use_boundary_all_scales
-
         self.Maxpool = nn.MaxPool2d(kernel_size=2, stride=2)
+
         self.stem = conv_block(ch_in=input_channel, ch_out=dims[0])
         self.encoder1 = CMUNeXtBlock(ch_in=dims[0], ch_out=dims[0], depth=depths[0], k=kernels[0])
         self.encoder2 = CMUNeXtBlock(ch_in=dims[0], ch_out=dims[1], depth=depths[1], k=kernels[1])
@@ -140,16 +138,11 @@ class CMUNeXt_BoundaryDS(nn.Module):
         self.Up_conv3 = fusion_conv(ch_in=dims[1] * 2, ch_out=dims[1])
         self.Up2 = up_conv(ch_in=dims[1], ch_out=dims[0])
         self.Up_conv2 = fusion_conv(ch_in=dims[0] * 2, ch_out=dims[0])
-        self.Conv_1x1 = nn.Conv2d(dims[0], num_classes, kernel_size=1, stride=1, padding=0)
 
-        self.edge_head2 = BoundaryHead(dims[0])
-        self.edge_head3 = BoundaryHead(dims[1])
-        self.edge_head4 = BoundaryHead(dims[2])
-        self.edge_head5 = BoundaryHead(dims[3])
+        self.seg_head = nn.Conv2d(dims[0], num_classes, kernel_size=1, stride=1, padding=0)
+        self.distance_head = DistanceHead(dims[0])
 
     def forward(self, x, return_aux=True):
-        out_size = x.shape[-2:]
-
         x1 = self.stem(x)
         x1 = self.encoder1(x1)
 
@@ -177,22 +170,15 @@ class CMUNeXt_BoundaryDS(nn.Module):
         d2 = self.Up2(d3)
         d2 = self.Up_conv2(torch.cat((x1, d2), dim=1))
 
-        seg_logit = self.Conv_1x1(d2)
+        seg_logit = self.seg_head(d2)
 
         if not return_aux:
             return seg_logit
 
-        edge_logits = {
-            "edge2": self.edge_head2(d2, out_size),
-            "edge3": self.edge_head3(d3, out_size),
-        }
-        if self.use_boundary_all_scales:
-            edge_logits["edge4"] = self.edge_head4(d4, out_size)
-            edge_logits["edge5"] = self.edge_head5(d5, out_size)
-
+        distance_logit = self.distance_head(d2)
         return {
             "seg": seg_logit,
-            "edges": edge_logits,
+            "dist": distance_logit,
         }
 
 
@@ -207,111 +193,110 @@ def dice_loss_with_logits(logits, targets, smooth=1.0):
 
 
 @torch.no_grad()
-def build_boundary_target(mask, kernel_size=3):
-    # Match the thin inner-boundary definition used by boundary_scores() so
-    # the auxiliary supervision optimizes for the same contour notion that the
-    # validation metrics later measure.
-    mask = (mask > 0.5).float()
-    pad = kernel_size // 2
-    ero = -F.max_pool2d(-mask, kernel_size=kernel_size, stride=1, padding=pad)
-    edge = (mask - ero) > 0
-    return edge.float()
+def build_signed_distance_target(mask, max_distance=32.0):
+    try:
+        from scipy.ndimage import distance_transform_edt
+    except ImportError as exc:
+        raise ImportError("CMUNeXt_DistanceAux requires scipy for distance-transform targets.") from exc
+
+    mask_np = (mask.detach().cpu().numpy() > 0.5).astype(np.uint8)
+    target = np.zeros_like(mask_np, dtype=np.float32)
+
+    for batch_idx in range(mask_np.shape[0]):
+        foreground = mask_np[batch_idx, 0].astype(bool)
+        if not foreground.any():
+            continue
+
+        pos_dist = distance_transform_edt(foreground)
+        neg_dist = distance_transform_edt(~foreground)
+        signed_distance = (neg_dist - pos_dist) / float(max_distance)
+        target[batch_idx, 0] = np.clip(signed_distance, -1.0, 1.0)
+
+    return torch.from_numpy(target).to(device=mask.device, dtype=mask.dtype)
 
 
-class BoundaryDeepSupervisionLoss(nn.Module):
+class DistanceAuxLoss(nn.Module):
     def __init__(
         self,
-        edge_weight=0.25,
+        dist_weight=0.15,
         seg_bce_weight=1.0,
         seg_dice_weight=1.0,
-        edge_bce_weight=0.5,
-        edge_dice_weight=1.5,
+        dist_band_weight=2.0,
+        dist_band_scale=4.0,
+        max_distance=32.0,
     ):
         super().__init__()
-        self.edge_weight = edge_weight
+        self.dist_weight = dist_weight
         self.seg_bce_weight = seg_bce_weight
         self.seg_dice_weight = seg_dice_weight
-        self.edge_bce_weight = edge_bce_weight
-        self.edge_dice_weight = edge_dice_weight
-        self.edge_loss_weights = {
-            "edge2": 1.0,
-            "edge3": 0.75,
-            "edge4": 0.35,
-            "edge5": 0.35,
-        }
+        self.dist_band_weight = dist_band_weight
+        self.dist_band_scale = dist_band_scale
+        self.max_distance = max_distance
 
-    def forward(self, outputs, mask):
+    def forward(self, outputs, mask, distance_target=None, dist_weight=None):
         seg_logit = outputs["seg"]
-        edge_logits = outputs["edges"]
+        dist_logit = outputs["dist"]
         mask = mask.float()
-        edge_target = build_boundary_target(mask)
-        valid_edge_samples = (mask.flatten(1).sum(dim=1) > 0)
+        effective_dist_weight = self.dist_weight if dist_weight is None else dist_weight
 
         seg_bce = F.binary_cross_entropy_with_logits(seg_logit, mask)
         seg_dice = dice_loss_with_logits(seg_logit, mask)
         seg_loss = self.seg_bce_weight * seg_bce + self.seg_dice_weight * seg_dice
 
-        weighted_edge_loss = seg_logit.new_tensor(0.0)
-        total_edge_weight = 0.0
-        if valid_edge_samples.any():
-            edge_target_valid = edge_target[valid_edge_samples]
-            for edge_name, edge_logit in edge_logits.items():
-                edge_weight = self.edge_loss_weights.get(edge_name, 1.0)
-                edge_logit_valid = edge_logit[valid_edge_samples]
-                edge_bce = F.binary_cross_entropy_with_logits(edge_logit_valid, edge_target_valid)
-                edge_dice = dice_loss_with_logits(edge_logit_valid, edge_target_valid)
-                edge_branch_loss = self.edge_bce_weight * edge_bce + self.edge_dice_weight * edge_dice
-                weighted_edge_loss = weighted_edge_loss + edge_weight * edge_branch_loss
-                total_edge_weight += edge_weight
-
-        if total_edge_weight > 0:
-            edge_loss = weighted_edge_loss / total_edge_weight
+        valid_samples = (mask.flatten(1).sum(dim=1) > 0)
+        if valid_samples.any():
+            if distance_target is None:
+                dist_target_valid = build_signed_distance_target(mask[valid_samples], max_distance=self.max_distance)
+            else:
+                dist_target_valid = distance_target[valid_samples].to(device=mask.device, dtype=mask.dtype)
+            dist_pred = torch.tanh(dist_logit[valid_samples])
+            dist_error = F.smooth_l1_loss(dist_pred, dist_target_valid, reduction="none")
+            band_weight = 1.0 + self.dist_band_weight * torch.exp(
+                -self.dist_band_scale * torch.abs(dist_target_valid)
+            )
+            dist_loss = (dist_error * band_weight).mean()
         else:
-            edge_loss = seg_logit.new_tensor(0.0)
+            dist_loss = seg_logit.new_tensor(0.0)
 
-        total = seg_loss + self.edge_weight * edge_loss
+        total = seg_loss + effective_dist_weight * dist_loss
         return total, {
             "loss_total": total.detach(),
             "loss_seg": seg_loss.detach(),
-            "loss_edge": edge_loss.detach(),
+            "loss_dist": dist_loss.detach(),
         }
 
 
-def cmunext_boundaryds(
+def cmunext_distanceaux(
     input_channel=3,
     num_classes=1,
     dims=(16, 32, 128, 160, 256),
     depths=(1, 1, 1, 3, 1),
     kernels=(3, 3, 7, 7, 7),
-    use_boundary_all_scales=False,
 ):
-    return CMUNeXt_BoundaryDS(
+    return CMUNeXt_DistanceAux(
         input_channel=input_channel,
         num_classes=num_classes,
         dims=dims,
         depths=depths,
         kernels=kernels,
-        use_boundary_all_scales=use_boundary_all_scales,
     )
 
 
-def cmunext_boundaryds_s(input_channel=3, num_classes=1, use_boundary_all_scales=False):
-    return CMUNeXt_BoundaryDS(
+def cmunext_distanceaux_s(input_channel=3, num_classes=1):
+    return CMUNeXt_DistanceAux(
         input_channel=input_channel,
         num_classes=num_classes,
         dims=(8, 16, 32, 64, 128),
         depths=(1, 1, 1, 1, 1),
         kernels=(3, 3, 7, 7, 9),
-        use_boundary_all_scales=use_boundary_all_scales,
     )
 
 
-def cmunext_boundaryds_l(input_channel=3, num_classes=1, use_boundary_all_scales=False):
-    return CMUNeXt_BoundaryDS(
+def cmunext_distanceaux_l(input_channel=3, num_classes=1):
+    return CMUNeXt_DistanceAux(
         input_channel=input_channel,
         num_classes=num_classes,
         dims=(32, 64, 128, 256, 512),
         depths=(1, 1, 1, 6, 3),
         kernels=(3, 3, 7, 7, 7),
-        use_boundary_all_scales=use_boundary_all_scales,
     )
