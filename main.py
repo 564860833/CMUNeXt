@@ -37,6 +37,7 @@ from src.network.conv_based.CMUNeXt_BoundaryDS import cmunext_boundaryds, Bounda
 from src.network.conv_based.CMUNeXt_DistanceAux import cmunext_distanceaux, DistanceAuxLoss
 from src.network.conv_based.CMUNeXt_DualGAG import cmunext_dualgag
 from src.network.conv_based.CMUNeXt_DualGAG_DistanceAux import cmunext_dualgag_distanceaux
+from src.network.conv_based.CMUNeXt_SpeckleEnhance import cmunext_speckle
 
 
 
@@ -61,7 +62,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--model', type=str, default="Mobile_U_ViT",
                     choices=["Mobile_U_ViT", "CMUNeXt","CMUNeXt_MKDC", "CMUNeXt_GAG", "CMUNeXt_CMFA", "CMUNeXt_PresenceAux",
                              "CMUNeXt_BoundaryDS", "CMUNeXt_DistanceAux", "CMUNeXt_DualGAG",
-                             "CMUNeXt_DualGAG_DistanceAux", "CMUNet",
+                             "CMUNeXt_DualGAG_DistanceAux", "CMUNeXt_SpeckleEnhance", "CMUNet",
                               "AttU_Net", "TransUnet", "R2U_Net", "U_Net",
                              "UNext", "UNetplus", "UNet3plus", "SwinUnet", "MedT", "TransUnet"], help='model')
 parser.add_argument('--base_dir', type=str, default="./data/busi", help='dir')
@@ -101,6 +102,8 @@ def get_model(args):
         model = cmunext_dualgag(num_classes=args.num_classes).cuda()
     elif args.model == "CMUNeXt_DualGAG_DistanceAux":
         model = cmunext_dualgag_distanceaux(num_classes=args.num_classes).cuda()
+    elif args.model == "CMUNeXt_SpeckleEnhance":
+        model = cmunext_speckle(num_classes=args.num_classes).cuda()
     elif args.model == "U_Net":
         model = U_Net(output_ch=args.num_classes).cuda()
     elif args.model == "AttU_Net":
@@ -155,8 +158,8 @@ def get_distance_aux_weight(args, criterion, epoch_num, max_epoch):
     base_weight = criterion.dist_weight
     warmup_start = max(5, int(max_epoch * 0.05))
     warmup_end = max(warmup_start + 1, int(max_epoch * 0.15))
-    decay_start = max(warmup_end + 1, int(max_epoch * 0.60))
-    final_weight = base_weight * 0.2
+    decay_start = max(warmup_end + 1, int(max_epoch * 0.40))
+    final_weight = 0.0
 
     if epoch_num < warmup_start:
         return 0.0
@@ -218,11 +221,11 @@ def getDataloader(args, distance_max=None):
                                transform=train_transform, train_file_dir=args.train_file_dir,
                                val_file_dir=args.val_file_dir,
                                use_distance_aux=args.model in {"CMUNeXt_DistanceAux", "CMUNeXt_DualGAG_DistanceAux"},
-                               distance_max=distance_max if distance_max is not None else 32.0)
+                               distance_max=distance_max if distance_max is not None else 8.0)
     db_val = MedicalDataSets(base_dir=args.base_dir, split="val", transform=val_transform,
                              train_file_dir=args.train_file_dir, val_file_dir=args.val_file_dir,
                              use_distance_aux=args.model in {"CMUNeXt_DistanceAux", "CMUNeXt_DualGAG_DistanceAux"},
-                             distance_max=distance_max if distance_max is not None else 32.0)
+                             distance_max=distance_max if distance_max is not None else 8.0)
     # <=== 修改 5: 将 print 替换为 logging.info
     logging.info("train num:{}, val num:{}".format(len(db_train), len(db_val)))
 
@@ -429,12 +432,12 @@ if __name__ == "__main__":
 #  libgomp: Invalid value for environment variable OMP_NUM_THREADS：     export OMP_NUM_THREADS=4
 #  启动数据增强     --use_extra_aug
 
-# python main.py --model CMUNeXt --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.01/busi-CMUNeXt-3-a --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model CMUNeXt --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.03/busi-CMUNeXt-3-a --base_lr 0.01 --epoch 300 --batch_size 8
 
-# python main.py --model CMUNeXt_DualGAG --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.01/busi-CMUNeXt_DualGAG-3-a --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model CMUNeXt_DualGAG --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.03/busi-CMUNeXt_DualGAG-3-a --base_lr 0.01 --epoch 300 --batch_size 8
 
-# python main.py --model CMUNeXt_DistanceAux --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.01/busi-CMUNeXt_DistanceAux-3-b --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model CMUNeXt_DistanceAux --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.03/busi-CMUNeXt_DistanceAux-3-a --base_lr 0.01 --epoch 300 --batch_size 8
 
-# python main.py --model CMUNeXt_DualGAG_DistanceAux --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.01/busi-CMUNeXt_DualGAG_DistanceAux-3-a --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model CMUNeXt_DualGAG_DistanceAux --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.01/busi-CMUNeXt_DualGAG_DistanceAux-3-b --base_lr 0.01 --epoch 300 --batch_size 8 --use_extra_aug
 
-# python main.py --model CMUNeXt_PresenceAux --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.01/busi-CMUNeXt_PresenceAux-3-a --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model CMUNeXt_BoundaryDS --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.03/busi-CMUNeXt_BoundaryDS-3-a --base_lr 0.01 --epoch 300 --batch_size 8

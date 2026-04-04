@@ -9,7 +9,7 @@ except ImportError:
     distance_transform_edt = None
 
 
-def build_signed_distance_target(mask, max_distance=32.0):
+def build_signed_distance_target(mask, max_distance=8.0):
     if distance_transform_edt is None:
         raise ImportError("DistanceAux data preparation requires scipy.")
 
@@ -34,7 +34,7 @@ class MedicalDataSets(Dataset):
             train_file_dir="train.txt",
             val_file_dir="val.txt",
             use_distance_aux=False,
-            distance_max=32.0,
+            distance_max=8.0,
     ):
         self._base_dir = base_dir
         self.sample_list = []
