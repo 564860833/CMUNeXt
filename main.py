@@ -29,15 +29,14 @@ from src.network.conv_based.UNetplus import ResNet34UnetPlus
 from src.network.conv_based.UNet3plus import UNet3plus
 from src.network.conv_based.CMUNeXt import cmunext
 # 找到原有导入 CMUNeXt 系列模型的位置，并在其后添加：
-from src.network.conv_based.CMUNeXt_MKDC import cmunext_mkdc
-from src.network.conv_based.CMUNeXt_GAG import cmunext_gag
-from src.network.conv_based.CMUNeXt_CMFA import cmunext_cmfa
 from src.network.conv_based.CMUNeXt_PresenceAux import cmunext_presenceaux, PresenceAuxLoss
 from src.network.conv_based.CMUNeXt_BoundaryDS import cmunext_boundaryds, BoundaryDeepSupervisionLoss
 from src.network.conv_based.CMUNeXt_DistanceAux import cmunext_distanceaux, DistanceAuxLoss
 from src.network.conv_based.CMUNeXt_DualGAG import cmunext_dualgag
 from src.network.conv_based.CMUNeXt_DualGAG_DistanceAux import cmunext_dualgag_distanceaux
+from src.network.conv_based.CMUNeXt_FDFC import cmunext_fdfc, FDFCLoss
 from src.network.conv_based.CMUNeXt_SpeckleEnhance import cmunext_speckle
+from src.network.conv_based.CMUNeXt_SpeckleEnhance_DualGAG import cmunext_speckle_dualgag
 
 
 
@@ -60,9 +59,10 @@ def seed_torch(seed):
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--model', type=str, default="Mobile_U_ViT",
-                    choices=["Mobile_U_ViT", "CMUNeXt","CMUNeXt_MKDC", "CMUNeXt_GAG", "CMUNeXt_CMFA", "CMUNeXt_PresenceAux",
+                    choices=["Mobile_U_ViT", "CMUNeXt", "CMUNeXt_FDFC", "CMUNeXt_PresenceAux",
                              "CMUNeXt_BoundaryDS", "CMUNeXt_DistanceAux", "CMUNeXt_DualGAG",
-                             "CMUNeXt_DualGAG_DistanceAux", "CMUNeXt_SpeckleEnhance", "CMUNet",
+                             "CMUNeXt_DualGAG_DistanceAux", "CMUNeXt_SpeckleEnhance",
+                             "CMUNeXt_SpeckleEnhance_DualGAG", "CMUNet",
                               "AttU_Net", "TransUnet", "R2U_Net", "U_Net",
                              "UNext", "UNetplus", "UNet3plus", "SwinUnet", "MedT", "TransUnet"], help='model')
 parser.add_argument('--base_dir', type=str, default="./data/busi", help='dir')
@@ -86,12 +86,8 @@ def get_model(args):
         model = CMUNet(output_ch=args.num_classes).cuda()
     elif args.model == "CMUNeXt":
         model = cmunext(num_classes=args.num_classes).cuda()
-    elif args.model == "CMUNeXt_MKDC":
-        model = cmunext_mkdc(num_classes=args.num_classes).cuda()
-    elif args.model == "CMUNeXt_GAG":
-        model = cmunext_gag(num_classes=args.num_classes).cuda()
-    elif args.model == "CMUNeXt_CMFA":
-        model = cmunext_cmfa(num_classes=args.num_classes).cuda()
+    elif args.model == "CMUNeXt_FDFC":
+        model = cmunext_fdfc(num_classes=args.num_classes).cuda()
     elif args.model == "CMUNeXt_PresenceAux":
         model = cmunext_presenceaux(num_classes=args.num_classes).cuda()
     elif args.model == "CMUNeXt_BoundaryDS":
@@ -104,6 +100,8 @@ def get_model(args):
         model = cmunext_dualgag_distanceaux(num_classes=args.num_classes).cuda()
     elif args.model == "CMUNeXt_SpeckleEnhance":
         model = cmunext_speckle(num_classes=args.num_classes).cuda()
+    elif args.model == "CMUNeXt_SpeckleEnhance_DualGAG":
+        model = cmunext_speckle_dualgag(num_classes=args.num_classes).cuda()
     elif args.model == "U_Net":
         model = U_Net(output_ch=args.num_classes).cuda()
     elif args.model == "AttU_Net":
@@ -123,6 +121,8 @@ def get_model(args):
 
 
 def get_criterion(args):
+    if args.model == "CMUNeXt_FDFC":
+        return FDFCLoss().cuda()
     if args.model == "CMUNeXt_PresenceAux":
         return PresenceAuxLoss().cuda()
     if args.model == "CMUNeXt_BoundaryDS":
@@ -432,12 +432,12 @@ if __name__ == "__main__":
 #  libgomp: Invalid value for environment variable OMP_NUM_THREADS：     export OMP_NUM_THREADS=4
 #  启动数据增强     --use_extra_aug
 
-# python main.py --model CMUNeXt --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.03/busi-CMUNeXt-3-a --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model CMUNeXt --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.05/busi-CMUNeXt-3-a --base_lr 0.01 --epoch 300 --batch_size 8
 
-# python main.py --model CMUNeXt_DualGAG --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.03/busi-CMUNeXt_DualGAG-3-a --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model CMUNeXt_DualGAG --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.05/busi-CMUNeXt_DualGAG-3-a --base_lr 0.01 --epoch 300 --batch_size 8
 
-# python main.py --model CMUNeXt_DistanceAux --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.03/busi-CMUNeXt_DistanceAux-3-a --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model CMUNeXt_FDFC --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.05/busi-CMUNeXt_FDFC-3-a --base_lr 0.01 --epoch 300 --batch_size 8
 
-# python main.py --model CMUNeXt_DualGAG_DistanceAux --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.01/busi-CMUNeXt_DualGAG_DistanceAux-3-b --base_lr 0.01 --epoch 300 --batch_size 8 --use_extra_aug
+# python main.py --model CMUNeXt_SpeckleEnhance --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.05/busi-CMUNeXt_SpeckleEnhance-3-c --base_lr 0.01 --epoch 300 --batch_size 8
 
-# python main.py --model CMUNeXt_BoundaryDS --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.03/busi-CMUNeXt_BoundaryDS-3-a --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model CMUNeXt_BoundaryDS --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.05/busi-CMUNeXt_BoundaryDS-3-a --base_lr 0.01 --epoch 300 --batch_size 8

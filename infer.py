@@ -18,9 +18,6 @@ from src.network.conv_based.UNeXt import UNext
 from src.network.conv_based.UNetplus import ResNet34UnetPlus
 from src.network.conv_based.UNet3plus import UNet3plus
 from src.network.conv_based.CMUNeXt import cmunext
-from src.network.conv_based.CMUNeXt_MKDC import cmunext_mkdc
-from src.network.conv_based.CMUNeXt_GAG import cmunext_gag
-from src.network.conv_based.CMUNeXt_CMFA import cmunext_cmfa
 from src.network.conv_based.CMUNeXt_PresenceAux import cmunext_presenceaux
 from src.network.conv_based.CMUNeXt_BoundaryDS import cmunext_boundaryds
 from src.network.conv_based.CMUNeXt_DistanceAux import cmunext_distanceaux
@@ -44,21 +41,6 @@ def load_model(model_path, args, device=torch.device("cuda" if torch.cuda.is_ava
             print("Let's use", torch.cuda.device_count(), "GPUs!")
             model = torch.nn.DataParallel(model)
             # model.cuda()
-    elif args.model == "CMUNeXt_MKDC":
-        model = cmunext_mkdc(num_classes=args.num_classes)
-        if torch.cuda.device_count() > 1:
-            print("Let's use", torch.cuda.device_count(), "GPUs!")
-            model = torch.nn.DataParallel(model)
-    elif args.model == "CMUNeXt_GAG":
-        model = cmunext_gag(num_classes=args.num_classes)
-        if torch.cuda.device_count() > 1:
-            print("Let's use", torch.cuda.device_count(), "GPUs!")
-            model = torch.nn.DataParallel(model)
-    elif args.model == "CMUNeXt_CMFA":
-        model = cmunext_cmfa(num_classes=args.num_classes)
-        if torch.cuda.device_count() > 1:
-            print("Let's use", torch.cuda.device_count(), "GPUs!")
-            model = torch.nn.DataParallel(model)
     elif args.model == "CMUNeXt_PresenceAux":
         model = cmunext_presenceaux(num_classes=args.num_classes)
         if torch.cuda.device_count() > 1:
@@ -199,7 +181,7 @@ if __name__ == "__main__":
 
     # 我们将 main.py 中的 transformer 模型也加入列表
     model_choices = [
-        "CMUNet", "CMUNeXt", "CMUNeXt_MKDC", "CMUNeXt_GAG", "CMUNeXt_CMFA",
+        "CMUNet", "CMUNeXt",
         "CMUNeXt_PresenceAux", "CMUNeXt_BoundaryDS", "CMUNeXt_DistanceAux",
         "CMUNeXt_DualGAG", "CMUNeXt_DualGAG_DistanceAux", "CMUNeXt_SpeckleEnhance",
         "U_Net", "AttU_Net", "UNext", "UNetplus", "UNet3plus",
