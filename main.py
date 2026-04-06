@@ -260,7 +260,6 @@ def main(args):
     # <=== 修改 6: 将 print 替换为 logging.info
     logging.info("Args: {}".format(args))  # 打印所有参数到日志
     logging.info("train file dir:{} val file dir:{}".format(args.train_file_dir, args.val_file_dir))
-
     optimizer = optim.SGD(model.parameters(), lr=base_lr, momentum=0.9, weight_decay=0.0001)
 
     # <=== 修改 7: 将 print 替换为 logging.info
@@ -431,13 +430,18 @@ if __name__ == "__main__":
 #  cd ~/autodl-tmp/cmu-net
 #  libgomp: Invalid value for environment variable OMP_NUM_THREADS：     export OMP_NUM_THREADS=4
 #  启动数据增强     --use_extra_aug
+#  启动EMA   --use_ema --ema_decay 0.999
 
-# python main.py --model CMUNeXt --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.05/busi-CMUNeXt-3-a --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model CMUNeXt --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.06/busi-CMUNeXt-3-b --base_lr 0.01 --epoch 300 --batch_size 8
 
-# python main.py --model CMUNeXt_DualGAG --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.05/busi-CMUNeXt_DualGAG-3-a --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model CMUNeXt --base_dir ./data/busi --train_file_dir busi_train2.txt --val_file_dir busi_val2.txt --save_dir ./checkpoint/4.06/busi-CMUNeXt-2-a --base_lr 0.01 --epoch 300 --batch_size 8
 
-# python main.py --model CMUNeXt_FDFC --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.05/busi-CMUNeXt_FDFC-3-a --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model CMUNeXt_DualGAG --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.06/busi-CMUNeXt_DualGAG-3-c --base_lr 0.01 --epoch 300 --batch_size 8
 
-# python main.py --model CMUNeXt_SpeckleEnhance --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.05/busi-CMUNeXt_SpeckleEnhance-3-c --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model CMUNeXt_FDFC --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.06/busi-CMUNeXt_FDFC-3-a --base_lr 0.01 --epoch 300 --batch_size 8
 
-# python main.py --model CMUNeXt_BoundaryDS --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.05/busi-CMUNeXt_BoundaryDS-3-a --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model CMUNeXt_SpeckleEnhance --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.06/busi-CMUNeXt_SpeckleEnhance-3-a --base_lr 0.01 --epoch 300 --batch_size 8
+
+# python main.py --model CMUNeXt_SpeckleEnhance_DualGAG --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.06/busi-CMUNeXt_SpeckleEnhance_DualGAG-3-a --base_lr 0.01 --epoch 300 --batch_size 8
+
+# python main.py --model CMUNeXt_BoundaryDS --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.06/busi-CMUNeXt_BoundaryDS-3-a --base_lr 0.01 --epoch 300 --batch_size 8
