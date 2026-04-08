@@ -36,8 +36,8 @@ from src.network.conv_based.CMUNeXt_DualGAG import cmunext_dualgag
 from src.network.conv_based.CMUNeXt_DualGAG_DistanceAux import cmunext_dualgag_distanceaux
 from src.network.conv_based.CMUNeXt_FAFE import cmunext_fafe
 from src.network.conv_based.CMUNeXt_FDFC import cmunext_fdfc, FDFCLoss
-from src.network.conv_based.CMUNeXt_BUGR import cmunext_bugr, BUGRLoss
-from src.network.conv_based.CMUNeXt_BUGR_SpeckleEnhance import cmunext_bugr_speckleenhance
+from src.network.conv_based.CMUNeXt_BUGR import cmunext_bugr
+from src.network.conv_based.CMUNeXt_BUGR_SpeckleEnhance import cmunext_bugr_speckleenhance, BUGRLoss
 from src.network.conv_based.CMUNeXt_SpeckleEnhance import cmunext_speckle
 from src.network.conv_based.CMUNeXt_SpeckleEnhance_DualGAG import cmunext_speckle_dualgag
 
@@ -571,3 +571,5 @@ if __name__ == "__main__":
 # python main.py --model CMUNeXt_BUGR --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.07/busi-CMUNeXt_BUGR-3-c --base_lr 0.01 --epoch 300 --batch_size 8 --val_threshold_mode scan
 
 # python main.py --model CMUNeXt_BoundaryDS --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.07/busi-CMUNeXt_BoundaryDS-3-a --base_lr 0.01 --epoch 300 --batch_size 8
+
+# python main.py --model BUGR_SpeckleEnhance --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.07/busi-BUGR_SpeckleEnhance-3-a --base_lr 0.01 --epoch 300 --batch_size 8
