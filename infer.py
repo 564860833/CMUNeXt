@@ -19,6 +19,7 @@ from src.network.conv_based.CMUNeXt_BUGR_SpeckleEnhance import cmunext_bugr_spec
 from src.network.conv_based.CMUNeXt_DistanceAux import cmunext_distanceaux
 from src.network.conv_based.CMUNeXt_DualGAG import cmunext_dualgag
 from src.network.conv_based.CMUNeXt_DualGAG_DistanceAux import cmunext_dualgag_distanceaux
+from src.network.conv_based.CMUNeXt_DualGAG_SpeckleEnhance import cmunext_dualgag_speckleenhance
 from src.network.conv_based.CMUNeXt_PresenceAux import cmunext_presenceaux
 from src.network.conv_based.CMUNeXt_SpeckleEnhance import cmunext_speckle
 from src.network.conv_based.U_Net import U_Net
@@ -49,6 +50,8 @@ def build_model(args):
         model = cmunext_dualgag_distanceaux(num_classes=args.num_classes)
     elif args.model == "CMUNeXt_SpeckleEnhance":
         model = cmunext_speckle(num_classes=args.num_classes)
+    elif args.model in {"CMUNeXt_DualGAG_SpeckleEnhance", "CMUNeXt_SpeckleEnhance_DualGAG"}:
+        model = cmunext_dualgag_speckleenhance(num_classes=args.num_classes)
     elif args.model == "U_Net":
         model = U_Net(output_ch=args.num_classes)
     elif args.model == "AttU_Net":
@@ -224,6 +227,7 @@ if __name__ == "__main__":
         "BUGR_SpeckleEnhance",
         "CMUNeXt_BoundaryDS", "CMUNeXt_DistanceAux", "CMUNeXt_DualGAG",
         "CMUNeXt_DualGAG_DistanceAux", "CMUNeXt_SpeckleEnhance",
+        "CMUNeXt_DualGAG_SpeckleEnhance", "CMUNeXt_SpeckleEnhance_DualGAG",
         "U_Net", "AttU_Net", "UNext", "UNetplus", "UNet3plus",
         "TransUnet", "SwinUnet", "MedT", "Mobile_U_ViT",
     ]

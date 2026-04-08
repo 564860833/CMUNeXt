@@ -15,7 +15,7 @@ from src.dataloader.dataset import MedicalDataSets
 from albumentations.augmentations import transforms
 from albumentations.core.composition import Compose
 from albumentations import RandomRotate90, Resize, RandomBrightnessContrast, \
-    GaussNoise, OneOf, RandomGamma
+    GaussNoise, OneOf, RandomGamma, GaussianBlur, GridDistortion
 
 import src.utils.losses as losses
 from src.utils.util import AverageMeter
@@ -39,7 +39,7 @@ from src.network.conv_based.CMUNeXt_FDFC import cmunext_fdfc, FDFCLoss
 from src.network.conv_based.CMUNeXt_BUGR import cmunext_bugr
 from src.network.conv_based.CMUNeXt_BUGR_SpeckleEnhance import cmunext_bugr_speckleenhance, BUGRLoss
 from src.network.conv_based.CMUNeXt_SpeckleEnhance import cmunext_speckle
-from src.network.conv_based.CMUNeXt_SpeckleEnhance_DualGAG import cmunext_speckle_dualgag
+from src.network.conv_based.CMUNeXt_DualGAG_SpeckleEnhance import cmunext_dualgag_speckleenhance
 
 
 
@@ -66,6 +66,7 @@ parser.add_argument('--model', type=str, default="Mobile_U_ViT",
                              "CMUNeXt_BUGR", "BUGR_SpeckleEnhance",
                              "CMUNeXt_BoundaryDS", "CMUNeXt_DistanceAux", "CMUNeXt_DualGAG",
                              "CMUNeXt_DualGAG_DistanceAux", "CMUNeXt_SpeckleEnhance",
+                             "CMUNeXt_DualGAG_SpeckleEnhance",
                              "CMUNeXt_SpeckleEnhance_DualGAG", "CMUNet",
                               "AttU_Net", "TransUnet", "R2U_Net", "U_Net",
                              "UNext", "UNetplus", "UNet3plus", "SwinUnet", "MedT", "TransUnet"], help='model')
@@ -80,7 +81,7 @@ parser.add_argument('--num_classes', type=int, default=1, help='seg num_classes'
 parser.add_argument('--seed', type=int, default=41, help='random seed')
 parser.add_argument('--save_dir', type=str, default="./checkpoint", help='directory to save the best model')
 # <=== 新增：是否开启额外数据增强的指令
-parser.add_argument('--use_extra_aug', action='store_true', help='Whether to use extra strong data augmentations')
+parser.add_argument('--use_extra_aug', action='store_true', help='Whether to use conservative extra data augmentations')
 parser.add_argument('--val_threshold_mode', type=str, default="fixed", choices=["fixed", "scan"],
                     help='Use a fixed validation threshold or scan a threshold range')
 parser.add_argument('--val_threshold', type=float, default=0.5,
@@ -93,6 +94,10 @@ parser.add_argument('--val_threshold_step', type=float, default=0.02,
                     help='Threshold scan step when val_threshold_mode=scan')
 parser.add_argument('--val_threshold_metric', type=str, default="iou", choices=["iou", "f1"],
                     help='Metric used to pick the best validation threshold')
+parser.add_argument('--bugr_lambda1', type=float, default=0.6,
+                    help='Weight for refined segmentation loss in BUGR-based models')
+parser.add_argument('--bugr_lambda2', type=float, default=0.2,
+                    help='Weight for boundary supervision loss in BUGR-based models')
 args = parser.parse_args()
 seed_torch(args.seed)
 
@@ -122,8 +127,8 @@ def get_model(args):
         model = cmunext_dualgag_distanceaux(num_classes=args.num_classes).cuda()
     elif args.model == "CMUNeXt_SpeckleEnhance":
         model = cmunext_speckle(num_classes=args.num_classes).cuda()
-    elif args.model == "CMUNeXt_SpeckleEnhance_DualGAG":
-        model = cmunext_speckle_dualgag(num_classes=args.num_classes).cuda()
+    elif args.model in {"CMUNeXt_DualGAG_SpeckleEnhance", "CMUNeXt_SpeckleEnhance_DualGAG"}:
+        model = cmunext_dualgag_speckleenhance(num_classes=args.num_classes).cuda()
     elif args.model == "U_Net":
         model = U_Net(output_ch=args.num_classes).cuda()
     elif args.model == "AttU_Net":
@@ -144,7 +149,10 @@ def get_model(args):
 
 def get_criterion(args):
     if args.model in {"CMUNeXt_BUGR", "BUGR_SpeckleEnhance"}:
-        return BUGRLoss().cuda()
+        return BUGRLoss(
+            lambda1=args.bugr_lambda1,
+            lambda2=args.bugr_lambda2,
+        ).cuda()
     if args.model == "CMUNeXt_FDFC":
         return FDFCLoss().cuda()
     if args.model == "CMUNeXt_PresenceAux":
@@ -250,17 +258,19 @@ def getDataloader(args, distance_max=None):
 
     # <=== 修改：根据参数选择增强策略
     if args.use_extra_aug:
-        logging.info("=> Enabled EXTRA strong data augmentation!")
+        logging.info("=> Enabled conservative EXTRA data augmentation.")
         train_transform = Compose([
             RandomRotate90(p=0.5),
             transforms.Flip(p=0.5),
-            # 额外的强增强：弹性形变和网格畸变（对医疗图像很有效）
+            # 保守版额外增强：低强度非刚性形变，增加形状鲁棒性但避免过度拉扯病灶轮廓
+            GridDistortion(num_steps=5, distort_limit=0.05, p=0.15),
             OneOf([
                 RandomBrightnessContrast(brightness_limit=0.15, contrast_limit=0.15, p=1.0),
                 RandomGamma(gamma_limit=(85, 115), p=1.0),
                 GaussNoise(var_limit=(10.0, 40.0), p=1.0),
             ], p=0.3),
-            # 额外的强增强：亮度和噪声干扰
+            # 保守版额外增强：轻模糊，模拟超声成像中的轻微软化
+            GaussianBlur(blur_limit=(3, 5), p=0.15),
             Resize(img_size, img_size),
             transforms.Normalize(),
         ])
@@ -558,18 +568,18 @@ if __name__ == "__main__":
 #  启动阈值扫描   --val_threshold_mode scan
 
 
-# python main.py --model CMUNeXt --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.07/busi-CMUNeXt-3-a --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model CMUNeXt --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.08/busi-CMUNeXt-3-b --base_lr 0.01 --epoch 300 --batch_size 8
 
 # python main.py --model CMUNeXt --base_dir ./data/busi --train_file_dir busi_train2.txt --val_file_dir busi_val2.txt --save_dir ./checkpoint/4.07/busi-CMUNeXt-2-b --base_lr 0.01 --epoch 300 --batch_size 8
 
-# python main.py --model CMUNeXt_DualGAG --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.07/busi-CMUNeXt_DualGAG-3-c --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model CMUNeXt_DualGAG --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.08/busi-CMUNeXt_DualGAG-3-a --base_lr 0.01 --epoch 300 --batch_size 8
 
-# python main.py --model CMUNeXt_FDFC --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.07/busi-CMUNeXt_FDFC-3-a --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model CMUNeXt_FDFC --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.08/busi-CMUNeXt_FDFC-3-a --base_lr 0.01 --epoch 300 --batch_size 8
 
-# python main.py --model CMUNeXt_SpeckleEnhance --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.07/busi-CMUNeXt_SpeckleEnhance-3-d --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model CMUNeXt_SpeckleEnhance --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.08/busi-CMUNeXt_SpeckleEnhance-3-a --base_lr 0.01 --epoch 300 --batch_size 8
 
-# python main.py --model CMUNeXt_BUGR --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.07/busi-CMUNeXt_BUGR-3-c --base_lr 0.01 --epoch 300 --batch_size 8 --val_threshold_mode scan
+# python main.py --model CMUNeXt_BUGR --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.08/busi-CMUNeXt_BUGR-3-a --base_lr 0.01 --epoch 300 --batch_size 8 --val_threshold_mode scan
 
-# python main.py --model CMUNeXt_BoundaryDS --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.07/busi-CMUNeXt_BoundaryDS-3-a --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model CMUNeXt_BoundaryDS --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.08/busi-CMUNeXt_BoundaryDS-3-a --base_lr 0.01 --epoch 300 --batch_size 8
 
-# python main.py --model BUGR_SpeckleEnhance --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.07/busi-BUGR_SpeckleEnhance-3-a --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model BUGR_SpeckleEnhance --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.08/busi-BUGR_SpeckleEnhance-3-a --base_lr 0.01 --epoch 300 --batch_size 8

@@ -477,10 +477,15 @@ class CMUNeXt_BUGR_SpeckleEnhance(nn.Module):
 
         pred_main = self.Conv_1x1(d2)
         noise_intensity = self._merge_noise_maps(noise_maps, target_size=d2.shape[-2:])
+        if noise_intensity is not None:
+            # Keep the noise map as a read-only prior for BUGR.
+            noise_prior = noise_intensity.detach()
+        else:
+            noise_prior = None
         pred_refined, boundary_map, uncertainty_map = self.bugr(
             d2,
             pred_main,
-            noise_intensity=noise_intensity,
+            noise_intensity=noise_prior,
         )
 
         if return_aux is None:
