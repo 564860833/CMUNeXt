@@ -99,7 +99,7 @@ class MedicalDataSets(Dataset):
         image = augmented['image']
         label = augmented['mask']
 
-        image = image.astype('float32') / 255
+        image = image.astype('float32')
         image = image.transpose(2, 0, 1)
 
         label = label.astype('float32') / 255

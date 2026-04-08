@@ -1,18 +1,16 @@
 import torch
 import torch.nn as nn
-
+import torch.nn.functional as F
 
 # ═══════════════════════════════════════════════
 #  基础模块 (与 CMUNeXt 一致)
 # ═══════════════════════════════════════════════
-
 class Residual(nn.Module):
     def __init__(self, fn):
         super().__init__()
         self.fn = fn
     def forward(self, x):
         return self.fn(x) + x
-
 
 class conv_block(nn.Module):
     def __init__(self, ch_in, ch_out):
@@ -25,7 +23,6 @@ class conv_block(nn.Module):
     def forward(self, x):
         return self.conv(x)
 
-
 class up_conv(nn.Module):
     def __init__(self, ch_in, ch_out):
         super().__init__()
@@ -37,7 +34,6 @@ class up_conv(nn.Module):
         )
     def forward(self, x):
         return self.up(x)
-
 
 class fusion_conv(nn.Module):
     def __init__(self, ch_in, ch_out):
@@ -55,7 +51,6 @@ class fusion_conv(nn.Module):
         )
     def forward(self, x):
         return self.conv(x)
-
 
 class CMUNeXtBlock(nn.Module):
     def __init__(self, ch_in, ch_out, depth=1, k=3):
@@ -85,7 +80,6 @@ class CMUNeXtBlock(nn.Module):
 # ═══════════════════════════════════════════════
 #  DDSR — Dual-Domain Speckle Refinement
 # ═══════════════════════════════════════════════
-
 class DDSR(nn.Module):
     """
     Dual-Domain Speckle Refinement
@@ -98,14 +92,25 @@ class DDSR(nn.Module):
     与门控式注意力的本质区别:
       门控: output = x × gate          乘法选择, 只能衰减
       减除: output = x − α · noise     加法纠正, 可恢复被偏移的真值
+
+    改动汇总:
+      [改动1] AvgPool2d 设置 count_include_pad=False，
+              避免边缘处 zero-padding 拉低结构估计、制造假 detail
+      [改动2] alpha 保持 per-channel 形式 (1, C, 1, 1)，
+              但改为 softplus 约束的小正值缩放，避免训练初期 DDSR 分支几乎无梯度
+      [改动3] signed_log 保留以兼容非 ReLU backbone（如 GELU），
+              当前 post-ReLU 输入恒非负，sign 分支不激活，行为等价于 log1p
     """
 
-    def __init__(self, channels, smooth_k=7):
+    def __init__(self, channels, smooth_k=5, alpha_init_raw=-5.3):
         super().__init__()
 
         # ── 结构估计 ──
+        # [改动1] count_include_pad=False: 边缘处仅用真实像素计算均值，
+        #         避免 zero-padding 导致结构估计偏低 → detail 偏高 → 假噪声
         self.smooth = nn.AvgPool2d(
-            kernel_size=smooth_k, stride=1, padding=smooth_k // 2
+            kernel_size=smooth_k, stride=1, padding=smooth_k // 2,
+            count_include_pad=False,
         )
 
         # ── 线性域残差分支 ──
@@ -139,38 +144,52 @@ class DDSR(nn.Module):
             nn.Conv2d(channels, channels, 1, bias=False),
         )
 
-        # ── 零初始化残差系数 ──
-        self.alpha = nn.Parameter(torch.zeros(1))
+        # ── 逐通道残差缩放 ──
+        # [改动2] 仍然使用 per-channel alpha，但存储为 softplus 的 raw 参数。
+        #         初始化为约 0.01 的小正值，既接近恒等映射，又能让 DDSR 分支从一开始获得梯度。
+        #         这里保留参数名 alpha，避免在当前版本内再引入额外的 state_dict 键名变化。
+        self.alpha = nn.Parameter(
+            torch.full((1, channels, 1, 1), alpha_init_raw)
+        )
 
     @staticmethod
     def signed_log(x):
+        """
+        [改动3] 保留 signed_log 以兼容未来可能的非 ReLU backbone。
+        当前 encoder 输出经过 ReLU，输入恒非负，sign(x) ≡ 1，
+        此时等价于 log1p(x)。若替换为 GELU 等激活函数，
+        输出可能包含负值，signed_log 仍然安全。
+        """
         return torch.sign(x) * torch.log1p(torch.abs(x))
 
     def forward(self, x):
+        # 结构-细节分离
         struct = self.smooth(x)
         detail = x - struct
 
+        # 线性域：直接处理 detail 残差
         lin_feat = self.lin_branch(detail)
 
+        # 对数域：乘性噪声 → 加性噪声
         x_log = self.signed_log(x)
         struct_log = self.smooth(x_log)
         log_detail = x_log - struct_log
         log_feat = self.log_branch(log_detail)
 
+        # 融合双域 → 预测噪声 → 减法纠正
         noise = self.noise_pred(torch.cat([lin_feat, log_feat], dim=1))
-
-        return x - self.alpha * noise
+        scale = F.softplus(self.alpha)
+        return x - scale * noise   # scale: (1, C, 1, 1) 逐通道广播
 
 
 # ═══════════════════════════════════════════════
 #  CMUNeXt_SpeckleEnhance
 #
 #  相对 CMUNeXt 的唯一改动:
-#    编码器每个 stage 输出后接 DDSR，净化 skip 特征
+#    在选定的 encoder stage 输出后接 DDSR，净化 skip 特征
 #    同时净化流向下游编码器的输入（级联效应）
 #    编码器、解码器结构完全不变
 # ═══════════════════════════════════════════════
-
 class CMUNeXt_SpeckleEnhance(nn.Module):
     def __init__(
         self,
@@ -179,8 +198,9 @@ class CMUNeXt_SpeckleEnhance(nn.Module):
         dims=(16, 32, 128, 160, 256),
         depths=(1, 1, 1, 3, 1),
         kernels=(3, 3, 7, 7, 7),
-        ddsr_stages=(0, 1, 2, 3),
-        ddsr_smooth_k=7,
+        ddsr_stages=(0, 1),
+        ddsr_smooth_k=5,
+        alpha_init_raw=-5.3,
     ):
         super().__init__()
         self.ddsr_stages = set(ddsr_stages)
@@ -204,7 +224,9 @@ class CMUNeXt_SpeckleEnhance(nn.Module):
         self.ddsr_modules = nn.ModuleDict()
         for s in ddsr_stages:
             self.ddsr_modules[str(s)] = DDSR(
-                channels=skip_dims[s], smooth_k=ddsr_smooth_k
+                channels=skip_dims[s],
+                smooth_k=ddsr_smooth_k,
+                alpha_init_raw=alpha_init_raw,
             )
 
         # ── Decoder (与 CMUNeXt 完全一致) ──
@@ -263,35 +285,40 @@ class CMUNeXt_SpeckleEnhance(nn.Module):
 # ═══════════════════════════════════════════════
 #  工厂函数
 # ═══════════════════════════════════════════════
-
 def cmunext_speckle(input_channel=3, num_classes=1):
-    """默认: 全 4 阶段 DDSR"""
-    return CMUNeXt_SpeckleEnhance(
-        input_channel=input_channel, num_classes=num_classes,
-        dims=(16, 32, 128, 160, 256),
-        depths=(1, 1, 1, 3, 1),
-        kernels=(3, 3, 7, 7, 7),
-        ddsr_stages=(0, 1, 2, 3),
-    )
-
-def cmunext_speckle_shallow(input_channel=3, num_classes=1):
-    """仅浅层 DDSR (stage 0, 1)"""
+    """默认: 浅层 DDSR (stage 0, 1), smooth_k=5"""
     return CMUNeXt_SpeckleEnhance(
         input_channel=input_channel, num_classes=num_classes,
         dims=(16, 32, 128, 160, 256),
         depths=(1, 1, 1, 3, 1),
         kernels=(3, 3, 7, 7, 7),
         ddsr_stages=(0, 1),
+        ddsr_smooth_k=5,
+        alpha_init_raw=-5.3,
+    )
+
+def cmunext_speckle_shallow(input_channel=3, num_classes=1):
+    """仅浅层 DDSR (stage 0, 1), smooth_k=5"""
+    return CMUNeXt_SpeckleEnhance(
+        input_channel=input_channel, num_classes=num_classes,
+        dims=(16, 32, 128, 160, 256),
+        depths=(1, 1, 1, 3, 1),
+        kernels=(3, 3, 7, 7, 7),
+        ddsr_stages=(0, 1),
+        ddsr_smooth_k=5,
+        alpha_init_raw=-5.3,
     )
 
 def cmunext_speckle_deep(input_channel=3, num_classes=1):
-    """仅深层 DDSR (stage 2, 3)"""
+    """仅深层 DDSR (stage 2, 3), smooth_k=5"""
     return CMUNeXt_SpeckleEnhance(
         input_channel=input_channel, num_classes=num_classes,
         dims=(16, 32, 128, 160, 256),
         depths=(1, 1, 1, 3, 1),
         kernels=(3, 3, 7, 7, 7),
         ddsr_stages=(2, 3),
+        ddsr_smooth_k=5,
+        alpha_init_raw=-5.3,
     )
 
 def cmunext_speckle_s(input_channel=3, num_classes=1):
@@ -300,7 +327,9 @@ def cmunext_speckle_s(input_channel=3, num_classes=1):
         dims=(8, 16, 32, 64, 128),
         depths=(1, 1, 1, 1, 1),
         kernels=(3, 3, 7, 7, 9),
-        ddsr_stages=(0, 1, 2, 3),
+        ddsr_stages=(0, 1),
+        ddsr_smooth_k=5,
+        alpha_init_raw=-5.3,
     )
 
 def cmunext_speckle_l(input_channel=3, num_classes=1):
@@ -309,5 +338,37 @@ def cmunext_speckle_l(input_channel=3, num_classes=1):
         dims=(32, 64, 128, 256, 512),
         depths=(1, 1, 1, 6, 3),
         kernels=(3, 3, 7, 7, 7),
-        ddsr_stages=(0, 1, 2, 3),
+        ddsr_stages=(0, 1),
+        ddsr_smooth_k=5,
+        alpha_init_raw=-5.3,
     )
+
+
+# ═══════════════════════════════════════════════
+#  测试 & 参数统计
+# ═══════════════════════════════════════════════
+if __name__ == "__main__":
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    model = cmunext_speckle(input_channel=3, num_classes=1).to(device)
+    images = torch.randn(2, 3, 256, 256, device=device)
+
+    # ── 前向 ──
+    model.eval()
+    with torch.no_grad():
+        logits = model(images)
+        pred = torch.sigmoid(logits)
+        binary = (pred > 0.5).float()
+
+    # ── 参数统计 ──
+    total_p = sum(p.numel() for p in model.parameters())
+    ddsr_p = sum(p.numel() for p in model.ddsr_modules.parameters())
+    print(f"Total params : {total_p:,}")
+    print(f"DDSR params  : {ddsr_p:,} ({100 * ddsr_p / total_p:.2f}%)")
+    print(f"Output shape : {logits.shape}")
+
+    # ── 验证 per-channel alpha / scale 形状 ──
+    for name, mod in model.ddsr_modules.items():
+        scale = F.softplus(mod.alpha)
+        print(f"  DDSR stage {name}: alpha shape = {mod.alpha.shape}, "
+              f"scale range = [{scale.min().item():.4f}, {scale.max().item():.4f}]")
