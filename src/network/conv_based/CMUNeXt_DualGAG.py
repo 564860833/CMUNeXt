@@ -156,6 +156,45 @@ class DualGatedAttentionGate(nn.Module):
         return x * spatial_mod * channel_gate
 
 
+_GAG_STAGE_ATTRS = {
+    3: "gag5",
+    2: "gag4",
+    1: "gag3",
+    0: "gag2",
+}
+
+
+def _normalize_gag_stages(gag_stages=None, use_shallow_gates=False):
+    if gag_stages is None:
+        gag_stages = (0, 1, 2, 3) if use_shallow_gates else (2, 3)
+    elif isinstance(gag_stages, str):
+        gag_stages = gag_stages.split(",")
+
+    stages = []
+    for stage in gag_stages:
+        stage = int(stage)
+        if stage not in _GAG_STAGE_ATTRS:
+            raise ValueError(f"Unsupported DualGAG stage: {stage}")
+        if stage not in stages:
+            stages.append(stage)
+
+    if not stages:
+        raise ValueError("DualGAG stages must include at least one stage.")
+    return tuple(stages)
+
+
+def _make_gag(stage, dims):
+    if stage == 3:
+        return DualGatedAttentionGate(F_g=dims[3], F_l=dims[3], F_int=max(8, dims[3] // 2), groups=4)
+    if stage == 2:
+        return DualGatedAttentionGate(F_g=dims[2], F_l=dims[2], F_int=max(8, dims[2] // 2), groups=4)
+    if stage == 1:
+        return DualGatedAttentionGate(F_g=dims[1], F_l=dims[1], F_int=max(8, dims[1] // 2), groups=4)
+    if stage == 0:
+        return DualGatedAttentionGate(F_g=dims[0], F_l=dims[0], F_int=max(8, dims[0] // 2), groups=2)
+    raise ValueError(f"Unsupported DualGAG stage: {stage}")
+
+
 class CMUNeXt_DualGAG(nn.Module):
     def __init__(
         self,
@@ -164,10 +203,12 @@ class CMUNeXt_DualGAG(nn.Module):
         dims=(16, 32, 128, 160, 256),
         depths=(1, 1, 1, 3, 1),
         kernels=(3, 3, 7, 7, 7),
+        gag_stages=None,
         use_shallow_gates=False,
     ):
         super().__init__()
-        self.use_shallow_gates = use_shallow_gates
+        self.gag_stages = set(_normalize_gag_stages(gag_stages, use_shallow_gates))
+        self.use_shallow_gates = bool(self.gag_stages & {0, 1})
         self.Maxpool = nn.MaxPool2d(kernel_size=2, stride=2)
 
         self.stem = conv_block(ch_in=input_channel, ch_out=dims[0])
@@ -187,14 +228,13 @@ class CMUNeXt_DualGAG(nn.Module):
         self.Up_conv2 = fusion_conv(ch_in=dims[0] * 2, ch_out=dims[0])
         self.Conv_1x1 = nn.Conv2d(dims[0], num_classes, kernel_size=1, stride=1, padding=0)
 
-        # Restrict dual attention to deeper skips by default. Shallow BUSI skip
-        # features carry fine boundaries, and gating all scales tended to trade
-        # precision for recall without lifting IoU.
-        self.gag5 = DualGatedAttentionGate(F_g=dims[3], F_l=dims[3], F_int=max(8, dims[3] // 2), groups=4)
-        self.gag4 = DualGatedAttentionGate(F_g=dims[2], F_l=dims[2], F_int=max(8, dims[2] // 2), groups=4)
-        if self.use_shallow_gates:
-            self.gag3 = DualGatedAttentionGate(F_g=dims[1], F_l=dims[1], F_int=max(8, dims[1] // 2), groups=4)
-            self.gag2 = DualGatedAttentionGate(F_g=dims[0], F_l=dims[0], F_int=max(8, dims[0] // 2), groups=2)
+        for stage in sorted(self.gag_stages, reverse=True):
+            setattr(self, _GAG_STAGE_ATTRS[stage], _make_gag(stage, dims))
+
+    def _apply_gag(self, g, x, stage):
+        if stage not in self.gag_stages:
+            return x
+        return getattr(self, _GAG_STAGE_ATTRS[stage])(g=g, x=x)
 
     def forward(self, x):
         x1 = self.stem(x)
@@ -213,19 +253,19 @@ class CMUNeXt_DualGAG(nn.Module):
         x5 = self.encoder5(x5)
 
         d5 = self.Up5(x5)
-        x4_p = self.gag5(g=d5, x=x4)
+        x4_p = self._apply_gag(g=d5, x=x4, stage=3)
         d5 = self.Up_conv5(torch.cat((x4_p, d5), dim=1))
 
         d4 = self.Up4(d5)
-        x3_p = self.gag4(g=d4, x=x3)
+        x3_p = self._apply_gag(g=d4, x=x3, stage=2)
         d4 = self.Up_conv4(torch.cat((x3_p, d4), dim=1))
 
         d3 = self.Up3(d4)
-        x2_p = self.gag3(g=d3, x=x2) if self.use_shallow_gates else x2
+        x2_p = self._apply_gag(g=d3, x=x2, stage=1)
         d3 = self.Up_conv3(torch.cat((x2_p, d3), dim=1))
 
         d2 = self.Up2(d3)
-        x1_p = self.gag2(g=d2, x=x1) if self.use_shallow_gates else x1
+        x1_p = self._apply_gag(g=d2, x=x1, stage=0)
         d2 = self.Up_conv2(torch.cat((x1_p, d2), dim=1))
 
         return self.Conv_1x1(d2)
@@ -237,6 +277,7 @@ def cmunext_dualgag(
     dims=(16, 32, 128, 160, 256),
     depths=(1, 1, 1, 3, 1),
     kernels=(3, 3, 7, 7, 7),
+    gag_stages=(2, 3),
 ):
     return CMUNeXt_DualGAG(
         input_channel=input_channel,
@@ -244,24 +285,27 @@ def cmunext_dualgag(
         dims=dims,
         depths=depths,
         kernels=kernels,
+        gag_stages=gag_stages,
     )
 
 
-def cmunext_dualgag_s(input_channel=3, num_classes=1):
+def cmunext_dualgag_s(input_channel=3, num_classes=1, gag_stages=(2, 3)):
     return CMUNeXt_DualGAG(
         input_channel=input_channel,
         num_classes=num_classes,
         dims=(8, 16, 32, 64, 128),
         depths=(1, 1, 1, 1, 1),
         kernels=(3, 3, 7, 7, 9),
+        gag_stages=gag_stages,
     )
 
 
-def cmunext_dualgag_l(input_channel=3, num_classes=1):
+def cmunext_dualgag_l(input_channel=3, num_classes=1, gag_stages=(2, 3)):
     return CMUNeXt_DualGAG(
         input_channel=input_channel,
         num_classes=num_classes,
         dims=(32, 64, 128, 256, 512),
         depths=(1, 1, 1, 6, 3),
         kernels=(3, 3, 7, 7, 7),
+        gag_stages=gag_stages,
     )

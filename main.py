@@ -83,6 +83,30 @@ def parse_ddsr_stages(value):
     return tuple(stages)
 
 
+def parse_gag_stages(value):
+    if isinstance(value, (tuple, list)):
+        stages = tuple(sorted({int(stage) for stage in value}))
+    else:
+        stages = []
+        for item in str(value).split(","):
+            item = item.strip()
+            if not item:
+                raise argparse.ArgumentTypeError("gag_stages must be one of: 0,1 or 2,3 or 0,1,2,3.")
+            try:
+                stage = int(item)
+            except ValueError as exc:
+                raise argparse.ArgumentTypeError("gag_stages values must be integers in [0, 1, 2, 3].") from exc
+            if stage not in {0, 1, 2, 3}:
+                raise argparse.ArgumentTypeError("gag_stages values must be in [0, 1, 2, 3].")
+            if stage not in stages:
+                stages.append(stage)
+        stages = tuple(sorted(stages))
+
+    if stages not in {(0, 1), (2, 3), (0, 1, 2, 3)}:
+        raise argparse.ArgumentTypeError("gag_stages must be one of: 0,1 or 2,3 or 0,1,2,3.")
+    return stages
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--model', type=str, default="Mobile_U_ViT",
                     choices=["Mobile_U_ViT", "CMUNeXt", "CMUNeXt_FAFE", "CMUNeXt_FDFC", "CMUNeXt_PresenceAux",
@@ -113,6 +137,8 @@ parser.add_argument('--ddsr_max_scale', type=float, default=0.05,
                     help='Upper bound for DDSR residual scale in CMUNeXt_SpeckleEnhance')
 parser.add_argument('--ddsr_mode', type=str, default="skip_only", choices=["skip_only", "propagate"],
                     help='Use DDSR only for decoder skips or propagate it through the encoder')
+parser.add_argument('--gag_stages', type=parse_gag_stages, default=(2, 3),
+                    help='Comma-separated DualGAG stages: 0,1 or 2,3 or 0,1,2,3')
 parser.add_argument('--val_threshold_mode', type=str, default="fixed", choices=["fixed", "scan"],
                     help='Use a fixed validation threshold or scan a threshold range')
 parser.add_argument('--val_threshold', type=float, default=0.5,
@@ -153,9 +179,9 @@ def get_model(args):
     elif args.model == "CMUNeXt_DistanceAux":
         model = cmunext_distanceaux(num_classes=args.num_classes).cuda()
     elif args.model == "CMUNeXt_DualGAG":
-        model = cmunext_dualgag(num_classes=args.num_classes).cuda()
+        model = cmunext_dualgag(num_classes=args.num_classes, gag_stages=args.gag_stages).cuda()
     elif args.model == "CMUNeXt_DualGAG_DistanceAux":
-        model = cmunext_dualgag_distanceaux(num_classes=args.num_classes).cuda()
+        model = cmunext_dualgag_distanceaux(num_classes=args.num_classes, gag_stages=args.gag_stages).cuda()
     elif args.model == "CMUNeXt_SpeckleEnhance":
         model = cmunext_speckle(
             num_classes=args.num_classes,
@@ -165,7 +191,10 @@ def get_model(args):
             ddsr_skip_only=args.ddsr_mode == "skip_only",
         ).cuda()
     elif args.model in {"CMUNeXt_DualGAG_SpeckleEnhance", "CMUNeXt_SpeckleEnhance_DualGAG"}:
-        model = cmunext_dualgag_speckleenhance(num_classes=args.num_classes).cuda()
+        model = cmunext_dualgag_speckleenhance(
+            num_classes=args.num_classes,
+            gag_stages=args.gag_stages,
+        ).cuda()
     elif args.model == "U_Net":
         model = U_Net(output_ch=args.num_classes).cuda()
     elif args.model == "AttU_Net":
@@ -600,23 +629,18 @@ if __name__ == "__main__":
 
 
 #  cd ~/autodl-tmp/cmu-net
-#  libgomp: Invalid value for environment variable OMP_NUM_THREADS：     export OMP_NUM_THREADS=4
+#  libgomp: Invalid value for environment variable OMP_NUM_THREADS：     echo $OMP_NUM_THREADS    export OMP_NUM_THREADS=4
+# 15
 #  启动数据增强     --use_extra_aug
 #  启动阈值扫描   --val_threshold_mode scan
 
 
-# python main.py --model CMUNeXt --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.08/busi-CMUNeXt-3-b --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model CMUNeXt --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/5.4/busi-CMUNeXt-3-d --base_lr 0.01 --epoch 300 --batch_size 8
 
-# python main.py --model CMUNeXt --base_dir ./data/busi --train_file_dir busi_train2.txt --val_file_dir busi_val2.txt --save_dir ./checkpoint/4.07/busi-CMUNeXt-2-b --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model CMUNeXt_DualGAG --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/5.4/busi-CMUNeXt_DualGAG-3-a --base_lr 0.01 --epoch 300 --batch_size 8
 
-# python main.py --model CMUNeXt_DualGAG --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.08/busi-CMUNeXt_DualGAG-3-a --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model CMUNeXt_SpeckleEnhance --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/5.4/busi-CMUNeXt_SpeckleEnhance0123-3-b --base_lr 0.01 --epoch 300 --batch_size 8 --ddsr_stages 0,1,2,3
 
-# python main.py --model CMUNeXt_FDFC --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.08/busi-CMUNeXt_FDFC-3-a --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model CMUNeXt_DualGAG_SpeckleEnhance --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/5.4/busi-CMUNeXt_DualGAG_SpeckleEnhance-3-a --base_lr 0.01 --epoch 300 --batch_size 8 --use_extra_aug
 
-# python main.py --model CMUNeXt_SpeckleEnhance --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.08/busi-CMUNeXt_SpeckleEnhance-3-a --base_lr 0.01 --epoch 300 --batch_size 8
-
-# python main.py --model CMUNeXt_BUGR --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.08/busi-CMUNeXt_BUGR-3-a --base_lr 0.01 --epoch 300 --batch_size 8 --val_threshold_mode scan
-
-# python main.py --model CMUNeXt_BoundaryDS --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.08/busi-CMUNeXt_BoundaryDS-3-a --base_lr 0.01 --epoch 300 --batch_size 8
-
-# python main.py --model BUGR_SpeckleEnhance --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.08/busi-BUGR_SpeckleEnhance-3-a --base_lr 0.01 --epoch 300 --batch_size 8
+# python main.py --model BUGR_SpeckleEnhance --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.08/busi-BUGR_SpeckleEnhance-3-b --base_lr 0.01 --epoch 300 --batch_size 8

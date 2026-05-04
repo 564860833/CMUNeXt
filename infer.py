@@ -29,6 +29,30 @@ from src.network.conv_based.UNeXt import UNext
 from src.network.transfomer_based.transformer_based_network import get_transformer_based_model
 
 
+def parse_gag_stages(value):
+    if isinstance(value, (tuple, list)):
+        stages = tuple(sorted({int(stage) for stage in value}))
+    else:
+        stages = []
+        for item in str(value).split(","):
+            item = item.strip()
+            if not item:
+                raise argparse.ArgumentTypeError("gag_stages must be one of: 0,1 or 2,3 or 0,1,2,3.")
+            try:
+                stage = int(item)
+            except ValueError as exc:
+                raise argparse.ArgumentTypeError("gag_stages values must be integers in [0, 1, 2, 3].") from exc
+            if stage not in {0, 1, 2, 3}:
+                raise argparse.ArgumentTypeError("gag_stages values must be in [0, 1, 2, 3].")
+            if stage not in stages:
+                stages.append(stage)
+        stages = tuple(sorted(stages))
+
+    if stages not in {(0, 1), (2, 3), (0, 1, 2, 3)}:
+        raise argparse.ArgumentTypeError("gag_stages must be one of: 0,1 or 2,3 or 0,1,2,3.")
+    return stages
+
+
 def build_model(args):
     if args.model == "CMUNet":
         model = CMUNet(output_ch=args.num_classes)
@@ -45,13 +69,13 @@ def build_model(args):
     elif args.model == "CMUNeXt_DistanceAux":
         model = cmunext_distanceaux(num_classes=args.num_classes)
     elif args.model == "CMUNeXt_DualGAG":
-        model = cmunext_dualgag(num_classes=args.num_classes)
+        model = cmunext_dualgag(num_classes=args.num_classes, gag_stages=args.gag_stages)
     elif args.model == "CMUNeXt_DualGAG_DistanceAux":
-        model = cmunext_dualgag_distanceaux(num_classes=args.num_classes)
+        model = cmunext_dualgag_distanceaux(num_classes=args.num_classes, gag_stages=args.gag_stages)
     elif args.model == "CMUNeXt_SpeckleEnhance":
         model = cmunext_speckle(num_classes=args.num_classes)
     elif args.model in {"CMUNeXt_DualGAG_SpeckleEnhance", "CMUNeXt_SpeckleEnhance_DualGAG"}:
-        model = cmunext_dualgag_speckleenhance(num_classes=args.num_classes)
+        model = cmunext_dualgag_speckleenhance(num_classes=args.num_classes, gag_stages=args.gag_stages)
     elif args.model == "U_Net":
         model = U_Net(output_ch=args.num_classes)
     elif args.model == "AttU_Net":
@@ -241,6 +265,8 @@ if __name__ == "__main__":
     parser.add_argument("--img_size", type=int, default=256, help="image size")
     parser.add_argument("--num_classes", type=int, default=1, help="number of classes")
     parser.add_argument("--batch_size", type=int, default=1, help="batch size")
+    parser.add_argument("--gag_stages", type=parse_gag_stages, default=(2, 3),
+                        help="Comma-separated DualGAG stages: 0,1 or 2,3 or 0,1,2,3")
     parser.add_argument("--val_threshold_mode", type=str, default="fixed", choices=["fixed", "scan"],
                         help="Use a fixed validation threshold or scan a threshold range")
     parser.add_argument("--val_threshold", type=float, default=0.5,
