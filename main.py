@@ -193,7 +193,11 @@ def get_model(args):
     elif args.model in {"CMUNeXt_DualGAG_SpeckleEnhance", "CMUNeXt_SpeckleEnhance_DualGAG"}:
         model = cmunext_dualgag_speckleenhance(
             num_classes=args.num_classes,
+            ddsr_stages=args.ddsr_stages,
             gag_stages=args.gag_stages,
+            ddsr_smooth_k=args.ddsr_smooth_k,
+            ddsr_max_scale=args.ddsr_max_scale,
+            ddsr_skip_only=args.ddsr_mode == "skip_only",
         ).cuda()
     elif args.model == "U_Net":
         model = U_Net(output_ch=args.num_classes).cuda()
