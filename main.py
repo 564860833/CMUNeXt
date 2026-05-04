@@ -60,6 +60,29 @@ def seed_torch(seed):
     os.environ['PYTHONHASHSEED'] = str(seed)
 
 
+def parse_ddsr_stages(value):
+    if isinstance(value, (tuple, list)):
+        return tuple(value)
+
+    stages = []
+    for item in str(value).split(","):
+        item = item.strip()
+        if not item:
+            raise argparse.ArgumentTypeError("ddsr_stages must be a comma-separated list, e.g. 2,3.")
+        try:
+            stage = int(item)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError("ddsr_stages values must be integers in [0, 1, 2, 3].") from exc
+        if stage not in {0, 1, 2, 3}:
+            raise argparse.ArgumentTypeError("ddsr_stages values must be in [0, 1, 2, 3].")
+        if stage not in stages:
+            stages.append(stage)
+
+    if not stages:
+        raise argparse.ArgumentTypeError("ddsr_stages must include at least one stage.")
+    return tuple(stages)
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--model', type=str, default="Mobile_U_ViT",
                     choices=["Mobile_U_ViT", "CMUNeXt", "CMUNeXt_FAFE", "CMUNeXt_FDFC", "CMUNeXt_PresenceAux",
@@ -82,6 +105,14 @@ parser.add_argument('--seed', type=int, default=41, help='random seed')
 parser.add_argument('--save_dir', type=str, default="./checkpoint", help='directory to save the best model')
 # <=== 新增：是否开启额外数据增强的指令
 parser.add_argument('--use_extra_aug', action='store_true', help='Whether to use conservative extra data augmentations')
+parser.add_argument('--ddsr_stages', type=parse_ddsr_stages, default=(0, 1),
+                    help='Comma-separated DDSR stages for CMUNeXt_SpeckleEnhance, e.g. 0,1 or 2,3 or 0,1,2,3')
+parser.add_argument('--ddsr_smooth_k', type=int, default=5,
+                    help='DDSR average-pooling kernel size for CMUNeXt_SpeckleEnhance')
+parser.add_argument('--ddsr_max_scale', type=float, default=0.05,
+                    help='Upper bound for DDSR residual scale in CMUNeXt_SpeckleEnhance')
+parser.add_argument('--ddsr_mode', type=str, default="skip_only", choices=["skip_only", "propagate"],
+                    help='Use DDSR only for decoder skips or propagate it through the encoder')
 parser.add_argument('--val_threshold_mode', type=str, default="fixed", choices=["fixed", "scan"],
                     help='Use a fixed validation threshold or scan a threshold range')
 parser.add_argument('--val_threshold', type=float, default=0.5,
@@ -126,7 +157,13 @@ def get_model(args):
     elif args.model == "CMUNeXt_DualGAG_DistanceAux":
         model = cmunext_dualgag_distanceaux(num_classes=args.num_classes).cuda()
     elif args.model == "CMUNeXt_SpeckleEnhance":
-        model = cmunext_speckle(num_classes=args.num_classes).cuda()
+        model = cmunext_speckle(
+            num_classes=args.num_classes,
+            ddsr_stages=args.ddsr_stages,
+            ddsr_smooth_k=args.ddsr_smooth_k,
+            ddsr_max_scale=args.ddsr_max_scale,
+            ddsr_skip_only=args.ddsr_mode == "skip_only",
+        ).cuda()
     elif args.model in {"CMUNeXt_DualGAG_SpeckleEnhance", "CMUNeXt_SpeckleEnhance_DualGAG"}:
         model = cmunext_dualgag_speckleenhance(num_classes=args.num_classes).cuda()
     elif args.model == "U_Net":
