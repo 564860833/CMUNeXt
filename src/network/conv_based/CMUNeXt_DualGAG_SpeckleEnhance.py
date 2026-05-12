@@ -42,6 +42,7 @@ class CMUNeXt_DualGAG_SpeckleEnhance(nn.Module):
         ddsr_smooth_k=5,
         ddsr_max_scale=0.05,
         ddsr_skip_only=True,
+        ddsr_aux_init=0.1,
         alpha_init_raw=-5.3,
     ):
         super().__init__()
@@ -66,6 +67,10 @@ class CMUNeXt_DualGAG_SpeckleEnhance(nn.Module):
                 alpha_init_raw=alpha_init_raw,
                 max_scale=ddsr_max_scale,
             )
+
+        self.ddsr_aux_scales = nn.ParameterDict()
+        for stage in sorted(self.ddsr_stages):
+            self.ddsr_aux_scales[str(stage)] = nn.Parameter(torch.tensor(float(ddsr_aux_init)))
 
         self.gag_modules = nn.ModuleDict()
         for stage in sorted(self.gag_stages):
@@ -93,6 +98,13 @@ class CMUNeXt_DualGAG_SpeckleEnhance(nn.Module):
             return x
         return self.gag_modules[key](g=g, x=x)
 
+    def _merge_skip(self, gated_raw_skip, raw_skip, ddsr_skip, stage):
+        key = str(stage)
+        if key not in self.ddsr_aux_scales:
+            return gated_raw_skip
+        scale = torch.tanh(self.ddsr_aux_scales[key])
+        return gated_raw_skip + scale * (ddsr_skip - raw_skip)
+
     def forward(self, x):
         x1 = self.stem(x)
         x1 = self.encoder1(x1)
@@ -118,20 +130,24 @@ class CMUNeXt_DualGAG_SpeckleEnhance(nn.Module):
         x5 = self.encoder5(x5)
 
         d5 = self.Up5(x5)
-        s4 = self._apply_gag(d5, s4, 3)
-        d5 = self.Up_conv5(torch.cat((s4, d5), dim=1))
+        x4_p = self._apply_gag(d5, x4, 3)
+        x4_p = self._merge_skip(x4_p, x4, s4, 3)
+        d5 = self.Up_conv5(torch.cat((x4_p, d5), dim=1))
 
         d4 = self.Up4(d5)
-        s3 = self._apply_gag(d4, s3, 2)
-        d4 = self.Up_conv4(torch.cat((s3, d4), dim=1))
+        x3_p = self._apply_gag(d4, x3, 2)
+        x3_p = self._merge_skip(x3_p, x3, s3, 2)
+        d4 = self.Up_conv4(torch.cat((x3_p, d4), dim=1))
 
         d3 = self.Up3(d4)
-        s2 = self._apply_gag(d3, s2, 1)
-        d3 = self.Up_conv3(torch.cat((s2, d3), dim=1))
+        x2_p = self._apply_gag(d3, x2, 1)
+        x2_p = self._merge_skip(x2_p, x2, s2, 1)
+        d3 = self.Up_conv3(torch.cat((x2_p, d3), dim=1))
 
         d2 = self.Up2(d3)
-        s1 = self._apply_gag(d2, s1, 0)
-        d2 = self.Up_conv2(torch.cat((s1, d2), dim=1))
+        x1_p = self._apply_gag(d2, x1, 0)
+        x1_p = self._merge_skip(x1_p, x1, s1, 0)
+        d2 = self.Up_conv2(torch.cat((x1_p, d2), dim=1))
 
         return self.Conv_1x1(d2)
 
@@ -144,6 +160,7 @@ def cmunext_dualgag_speckleenhance(
     ddsr_smooth_k=5,
     ddsr_max_scale=0.05,
     ddsr_skip_only=True,
+    ddsr_aux_init=0.1,
 ):
     return CMUNeXt_DualGAG_SpeckleEnhance(
         input_channel=input_channel,
@@ -156,6 +173,7 @@ def cmunext_dualgag_speckleenhance(
         ddsr_smooth_k=ddsr_smooth_k,
         ddsr_max_scale=ddsr_max_scale,
         ddsr_skip_only=ddsr_skip_only,
+        ddsr_aux_init=ddsr_aux_init,
         alpha_init_raw=-5.3,
     )
 
@@ -172,6 +190,7 @@ def cmunext_dualgag_speckleenhance_full(input_channel=3, num_classes=1):
         ddsr_smooth_k=5,
         ddsr_max_scale=0.05,
         ddsr_skip_only=True,
+        ddsr_aux_init=0.1,
         alpha_init_raw=-5.3,
     )
 
@@ -184,6 +203,7 @@ def cmunext_dualgag_speckleenhance_s(
     ddsr_smooth_k=5,
     ddsr_max_scale=0.05,
     ddsr_skip_only=True,
+    ddsr_aux_init=0.1,
 ):
     return CMUNeXt_DualGAG_SpeckleEnhance(
         input_channel=input_channel,
@@ -196,6 +216,7 @@ def cmunext_dualgag_speckleenhance_s(
         ddsr_smooth_k=ddsr_smooth_k,
         ddsr_max_scale=ddsr_max_scale,
         ddsr_skip_only=ddsr_skip_only,
+        ddsr_aux_init=ddsr_aux_init,
         alpha_init_raw=-5.3,
     )
 
@@ -208,6 +229,7 @@ def cmunext_dualgag_speckleenhance_l(
     ddsr_smooth_k=5,
     ddsr_max_scale=0.05,
     ddsr_skip_only=True,
+    ddsr_aux_init=0.1,
 ):
     return CMUNeXt_DualGAG_SpeckleEnhance(
         input_channel=input_channel,
@@ -220,6 +242,7 @@ def cmunext_dualgag_speckleenhance_l(
         ddsr_smooth_k=ddsr_smooth_k,
         ddsr_max_scale=ddsr_max_scale,
         ddsr_skip_only=ddsr_skip_only,
+        ddsr_aux_init=ddsr_aux_init,
         alpha_init_raw=-5.3,
     )
 

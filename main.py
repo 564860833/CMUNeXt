@@ -137,6 +137,8 @@ parser.add_argument('--ddsr_max_scale', type=float, default=0.05,
                     help='Upper bound for DDSR residual scale in CMUNeXt_SpeckleEnhance')
 parser.add_argument('--ddsr_mode', type=str, default="skip_only", choices=["skip_only", "propagate"],
                     help='Use DDSR only for decoder skips or propagate it through the encoder')
+parser.add_argument('--ddsr_aux_init', type=float, default=0.1,
+                    help='Initial DDSR auxiliary residual blend for DualGAG_SpeckleEnhance')
 parser.add_argument('--gag_stages', type=parse_gag_stages, default=(2, 3),
                     help='Comma-separated DualGAG stages: 0,1 or 2,3 or 0,1,2,3')
 parser.add_argument('--val_threshold_mode', type=str, default="fixed", choices=["fixed", "scan"],
@@ -198,6 +200,7 @@ def get_model(args):
             ddsr_smooth_k=args.ddsr_smooth_k,
             ddsr_max_scale=args.ddsr_max_scale,
             ddsr_skip_only=args.ddsr_mode == "skip_only",
+            ddsr_aux_init=args.ddsr_aux_init,
         ).cuda()
     elif args.model == "U_Net":
         model = U_Net(output_ch=args.num_classes).cuda()
@@ -645,6 +648,6 @@ if __name__ == "__main__":
 
 # python main.py --model CMUNeXt_SpeckleEnhance --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/5.4/busi-CMUNeXt_SpeckleEnhance0123-3-b --base_lr 0.01 --epoch 300 --batch_size 8 --ddsr_stages 0,1,2,3
 
-# python main.py --model CMUNeXt_DualGAG_SpeckleEnhance --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/5.4/busi-CMUNeXt_DualGAG_SpeckleEnhance-3-a --base_lr 0.01 --epoch 300 --batch_size 8 --use_extra_aug
+# python main.py --model CMUNeXt_DualGAG_SpeckleEnhance --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/5.4/busi-CMUNeXt_DualGAG_SpeckleEnhance-3-c --base_lr 0.01 --epoch 300 --batch_size 8 --ddsr_stages 0,1 --gag_stages 0,1,2,3 --use_extra_aug
 
 # python main.py --model BUGR_SpeckleEnhance --base_dir ./data/busi --train_file_dir busi_train3.txt --val_file_dir busi_val3.txt --save_dir ./checkpoint/4.08/busi-BUGR_SpeckleEnhance-3-b --base_lr 0.01 --epoch 300 --batch_size 8

@@ -111,6 +111,7 @@ def build_model(args):
             ddsr_smooth_k=args.ddsr_smooth_k,
             ddsr_max_scale=args.ddsr_max_scale,
             ddsr_skip_only=args.ddsr_mode == "skip_only",
+            ddsr_aux_init=args.ddsr_aux_init,
         )
     elif args.model == "U_Net":
         model = U_Net(output_ch=args.num_classes)
@@ -309,6 +310,8 @@ if __name__ == "__main__":
                         help="Upper bound for DDSR residual scale")
     parser.add_argument("--ddsr_mode", type=str, default="skip_only", choices=["skip_only", "propagate"],
                         help="Use DDSR only for decoder skips or propagate it through the encoder")
+    parser.add_argument("--ddsr_aux_init", type=float, default=0.1,
+                        help="Initial DDSR auxiliary residual blend for DualGAG_SpeckleEnhance")
     parser.add_argument("--gag_stages", type=parse_gag_stages, default=(2, 3),
                         help="Comma-separated DualGAG stages: 0,1 or 2,3 or 0,1,2,3")
     parser.add_argument("--val_threshold_mode", type=str, default="fixed", choices=["fixed", "scan"],
